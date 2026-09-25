@@ -113,6 +113,21 @@ func Distribute() func(c *gin.Context) {
 				}
 				message := selectErr.Message
 				if selectErr.NoAvailableChannel {
+					// BYOK fallback: when no managed channel serves this model but
+					// the customer has bound their own upstream key, let the request
+					// through. The relay controller's selectByokShadowChannel will
+					// build an ephemeral channel from the customer's key.
+					if userId := c.GetInt("id"); userId > 0 {
+						if byokKey, _ := service.FindMatchingByokKey(int64(userId), modelRequest.Model); byokKey != nil {
+							logger.LogDebug(c, "distributor: no managed channel for model %s, BYOK key %d available for user %d, allowing through", modelRequest.Model, byokKey.ID, userId)
+							// Set original_model so the relay controller can resolve pricing
+							// and build RelayInfo correctly without a managed channel.
+							c.Set("original_model", modelRequest.Model)
+							common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
+							c.Next()
+							return
+						}
+					}
 					message = noAvailableChannelMessage(c, usingGroup, modelRequest.Model)
 				} else if selectErr.MessageID != "" {
 					message = i18n.T(c, selectErr.MessageID, selectErr.Params)

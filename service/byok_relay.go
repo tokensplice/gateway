@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/metrics"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	hosttypes "github.com/QuantumNous/new-api/types"
@@ -337,6 +338,23 @@ func (r *ByokRoute) RecordFailure(ctx *gin.Context, apiErr *types.NewAPIError) {
 		}
 	}
 
+	// The failure reason is published as a closed set derived from the upstream
+	// status code. The provider's own error string must not become a label: it
+	// is upstream-controlled text, so it would let a vendor multiply the series
+	// count by changing its wording.
+	errorType := "unreachable"
+	switch {
+	case statusCode == http.StatusUnauthorized, statusCode == http.StatusForbidden:
+		errorType = "invalid_credential"
+	case statusCode == http.StatusTooManyRequests:
+		errorType = "rate_limited"
+	case statusCode >= 500:
+		errorType = "upstream_error"
+	case statusCode >= 400:
+		errorType = "request_rejected"
+	}
+	metrics.RecordByokKeyFailure(r.Provider, errorType)
+
 	r.recordUsage(ctx, 0, 0, 0, 0, false)
 }
 
@@ -347,6 +365,15 @@ func (r *ByokRoute) recordUsage(ctx *gin.Context, promptTokens int, completionTo
 	if r == nil {
 		return
 	}
+	latency := time.Since(r.StartedAt)
+	// Every attempt is booked here, served or not, which is exactly the
+	// population the BYOK counters need: a failed attempt is invisible to the
+	// customer because the request falls through to a managed channel, so the
+	// counter is the only signal that their key is breaking. feeQuota is 0 on a
+	// failure, so revenue is never overstated. Token counts are not published
+	// here — the relay boundary reports them for both routes from the same
+	// settled figures.
+	metrics.RecordByokRequest(r.ModelName, r.Provider, success, feeQuota, latency)
 	usage := &model.ByokUsage{
 		ByokKeyId:        r.KeyId,
 		UserId:           r.UserId,
@@ -355,7 +382,7 @@ func (r *ByokRoute) recordUsage(ctx *gin.Context, promptTokens int, completionTo
 		CompletionTokens: completionTokens,
 		PlatformFee:      feeQuota,
 		NotionalCost:     notionalQuota,
-		LatencyMs:        time.Since(r.StartedAt).Milliseconds(),
+		LatencyMs:        latency.Milliseconds(),
 		Success:          success,
 	}
 	if err := model.InsertByokUsage(usage); err != nil {

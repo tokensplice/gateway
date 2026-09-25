@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
+	"github.com/QuantumNous/new-api/pkg/metrics"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/relay"
 	"github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
@@ -132,6 +133,21 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		if relayFormat != types.RelayFormatOpenAIRealtime {
 			perfmetrics.RecordRelayResult(c.Request.Context(), relayInfo, resultErr)
+			// One Prometheus sample per request, taken where perf_metrics already
+			// takes its own: after the retry loop, so the channel labels describe
+			// the attempt that finally answered and the duration is what the
+			// client waited. A realtime session is excluded for the same reason
+			// perf_metrics excludes it — a minutes-long WebSocket is not
+			// comparable to an HTTP relay, and it is still counted by the request
+			// middleware.
+			channelId := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
+			provider := constant.GetChannelTypeName(common.GetContextKeyInt(c, constant.ContextKeyChannelType))
+			metrics.RecordRelayRequest(relayInfo.OriginModelName, provider, metrics.RouteForChannelId(channelId),
+				time.Since(relayInfo.StartTime), resultErr == nil,
+				int(relayInfo.PerformanceInputTokens), int(relayInfo.PerformanceOutputTokens))
+			if relayInfo.IsStream && relayInfo.HasSendResponse() {
+				metrics.RecordFirstToken(relayInfo.OriginModelName, provider, relayInfo.FirstResponseTime.Sub(relayInfo.StartTime))
+			}
 		}
 		if recovered != nil {
 			panic(recovered)
@@ -163,6 +179,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		relayInfo.StreamStatus = nil
 		relayInfo.PerformanceBusinessRejection = false
+		relayInfo.PerformanceInputTokens = 0
 		relayInfo.PerformanceOutputTokens = 0
 		relayInfo.RetryIndex = retryParam.GetRetry()
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
@@ -189,6 +206,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
 
+		attemptStartedAt := time.Now()
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:
 			newAPIError = relay.WssHelper(c, relayInfo)
@@ -199,6 +217,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		default:
 			newAPIError = relayHandler(c, relayInfo)
 		}
+		// One sample per channel attempt, so a request that failed over is
+		// attributed to every upstream it touched. The recorder ignores a BYOK
+		// shadow channel, whose id is synthetic and negative.
+		metrics.RecordChannelRequest(channel.Id, channel.Name, newAPIError == nil, time.Since(attemptStartedAt))
 
 		if newAPIError == nil {
 			service.FinishByokAttempt(c, nil)

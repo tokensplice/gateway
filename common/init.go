@@ -225,6 +225,11 @@ func initConstantEnv() {
 	constant.TaskPluginProtocolTickJitterMilliseconds = GetEnvOrDefault("TASK_PLUGIN_PROTOCOL_TICK_JITTER_MILLISECONDS", 500)
 	constant.TaskPluginProtocolHeartbeatSeconds = GetEnvOrDefault("TASK_PLUGIN_PROTOCOL_HEARTBEAT_SECONDS", 15)
 
+	// Prometheus 可观测性：/metrics 端点与请求指标中间件的开关，
+	// 以及可选的 Bearer 令牌（为空表示本地抓取无需鉴权）。
+	constant.MetricsEnabled = GetEnvOrDefaultBool("METRICS_ENABLED", true)
+	constant.MetricsToken = strings.TrimSpace(GetEnvOrDefaultString("METRICS_TOKEN", ""))
+
 	soraPatchStr := GetEnvOrDefaultString("TASK_PRICE_PATCH", "")
 	if soraPatchStr != "" {
 		var taskPricePatches []string

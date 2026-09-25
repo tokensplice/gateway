@@ -193,8 +193,11 @@ type RelayInfo struct {
 	FinalRequestRelayFormat types.RelayFormat
 
 	StreamStatus *StreamStatus
-	// PerformanceOutputTokens is captured by settlement and sampled once at
-	// the request boundary, independently of billing success or failure.
+	// PerformanceInputTokens and PerformanceOutputTokens are captured by
+	// settlement and sampled once at the request boundary, independently of
+	// billing success or failure. They are observability only: no pricing or
+	// settlement decision reads them back.
+	PerformanceInputTokens       int64
 	PerformanceOutputTokens      int64
 	PerformanceBusinessRejection bool
 

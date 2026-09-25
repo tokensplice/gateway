@@ -412,6 +412,7 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		Group:            relayInfo.UsingGroup,
 		Other:            other,
 	})
+	relayInfo.PerformanceInputTokens = int64(usage.PromptTokens)
 	relayInfo.PerformanceOutputTokens = int64(usage.CompletionTokens)
 }
 

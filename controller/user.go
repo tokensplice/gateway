@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/metrics"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
@@ -291,6 +292,11 @@ func Register(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	// Counted at the insert, which is where the account comes into existence.
+	// The counter is aggregate only: it carries no username, email, or any other
+	// registration input, so a metrics reader learns the sign-up rate and nothing
+	// about who signed up.
+	metrics.RecordUserRegistration()
 
 	// 获取插入后的用户ID
 	var insertedUser model.User

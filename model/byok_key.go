@@ -245,6 +245,18 @@ func HasActiveByokKey(userId int64) (bool, error) {
 	return len(ids) > 0, nil
 }
 
+// CountActiveByokKeys reports how many keys across every user are currently
+// eligible for routing. It backs the Prometheus byok_keys_active gauge, which
+// service.StartMetricsGaugeSync refreshes on the ordinary sync interval; it is
+// not on the relay path, where HasActiveByokKey stays the per-user gate.
+func CountActiveByokKeys() (int64, error) {
+	var count int64
+	err := DB.Model(&ByokKey{}).
+		Where("status = ?", constant.ByokKeyStatusActive).
+		Count(&count).Error
+	return count, err
+}
+
 // TouchByokKeyUsage marks a key as used. It is called from BYOK settlement
 // (service.ByokRoute.RecordSuccess), not from key selection, so a routed but
 // failed request does not advance the rotation.

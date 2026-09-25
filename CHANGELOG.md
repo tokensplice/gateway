@@ -8,6 +8,10 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Observability: a Prometheus endpoint at `GET /metrics` on the main HTTP port, outside every authentication group and optionally protected by a `METRICS_TOKEN` bearer credential. It exposes relay request counts, durations, and time to first token by model, provider, and route; token and quota throughput; BYOK attempts, fee revenue, active keys, and key failures; managed channel health, attempts, and latency; and active connections
+- Request metrics middleware covering every endpoint, labelled by the route pattern rather than the raw URL so an unauthenticated caller cannot create unbounded series by requesting random paths
+- Grafana dashboard template at `deploy/grafana/tokensplice-gateway.json`, importable as-is against a Prometheus data source
+- Environment variables `METRICS_ENABLED` (default `true`) and `METRICS_TOKEN` (default empty, meaning the endpoint is open for local scraping)
 - BYOK relay integration: a request whose model matches a customer's own provider key is routed through that key and charged only the platform fee (a percentage of the notional managed-channel price), with seamless failover to managed channels when the key fails
 - BYOK usage recording: every attempt, successful or not, writes a `byok_usage` row and an upstream 401/403 marks the key invalid
 - Brand configuration via environment variables (`SYSTEM_NAME`, `LOGO_URL`, `FOOTER`, `TOP_UP_LINK`)

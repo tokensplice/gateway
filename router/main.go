@@ -13,6 +13,10 @@ import (
 )
 
 func SetRouter(router *gin.Engine, assets WebAssets) {
+	// The Prometheus scrape endpoint goes first: it sits outside every
+	// authentication group, and registering it before the web router keeps the
+	// frontend's catch-all from ever shadowing it.
+	SetMetricsRouter(router)
 	SetApiRouter(router)
 	SetDashboardRouter(router)
 	SetRelayRouter(router)

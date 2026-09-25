@@ -24,6 +24,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/oauth"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
+	"github.com/QuantumNous/new-api/pkg/metrics"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/pkg/wsmanager"
 	"github.com/QuantumNous/new-api/relay"
@@ -121,6 +122,12 @@ func main() {
 	// 数据看板
 	go model.UpdateQuotaData()
 
+	// Keep the Prometheus gauges whose truth lives in the database — channel
+	// health and the number of routable BYOK keys — in step with it, so an
+	// admin console change or a restart is reflected without waiting for a
+	// relay request to touch the same row.
+	go service.StartMetricsGaugeSync(common.SyncFrequency)
+
 	if os.Getenv("CHANNEL_UPDATE_FREQUENCY") != "" {
 		frequency, err := strconv.Atoi(os.Getenv("CHANNEL_UPDATE_FREQUENCY"))
 		if err != nil {
@@ -183,6 +190,10 @@ func main() {
 		common.FatalLog("failed to configure trusted proxies: " + err.Error())
 		return
 	}
+	// Registered outermost so a panic is already recovered, and its 500 already
+	// written, by the time the request is counted. A recovered panic must show
+	// up in the error rate instead of disappearing from the sample.
+	server.Use(metrics.Middleware())
 	server.Use(gin.CustomRecovery(func(c *gin.Context, err any) {
 		common.SysLog(fmt.Sprintf("panic detected: %v", err))
 		c.JSON(http.StatusInternalServerError, gin.H{

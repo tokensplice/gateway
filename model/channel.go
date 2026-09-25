@@ -382,6 +382,38 @@ func GetAllChannels(startIdx int, num int, selectAll bool, idSort bool, sortOpti
 	return channels, err
 }
 
+// ChannelHealth is the health projection of a channel row: everything a
+// monitoring snapshot needs, and no column that could carry a credential.
+type ChannelHealth struct {
+	Id      int
+	Name    string
+	Enabled bool
+}
+
+// GetChannelHealth reads the id, name, and enabled state of every channel for
+// the Prometheus channel_up gauge. It runs on a timer rather than on the relay
+// path, and it selects three columns explicitly so a periodic snapshot never
+// pulls upstream API keys into memory just to count how many channels are up.
+func GetChannelHealth() ([]ChannelHealth, error) {
+	var rows []struct {
+		Id     int
+		Name   string
+		Status int
+	}
+	if err := DB.Model(&Channel{}).Select("id", "name", "status").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	health := make([]ChannelHealth, 0, len(rows))
+	for _, row := range rows {
+		health = append(health, ChannelHealth{
+			Id:      row.Id,
+			Name:    row.Name,
+			Enabled: row.Status == common.ChannelStatusEnabled,
+		})
+	}
+	return health, nil
+}
+
 func GetChannelsByTag(tag string, idSort bool, selectAll bool, sortOptions ...ChannelSortOptions) ([]*Channel, error) {
 	var channels []*Channel
 	order := resolveChannelSortOptions(idSort, sortOptions)

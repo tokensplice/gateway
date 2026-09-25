@@ -33,6 +33,15 @@ var MetricsEnabled = true
 // is scraped inside a trusted network.
 var MetricsToken string
 
+// TokenDefaultRateLimitRPM is the deployment-wide fallback for a token's
+// requests-per-minute limit, used when the token itself leaves RateLimitRPM at
+// zero. Zero means tokens without an explicit limit are not request throttled.
+var TokenDefaultRateLimitRPM int
+
+// TokenSpendingCacheSeconds bounds how long a per-token daily/monthly spending
+// total is served from cache before it is recomputed from the consume logs.
+var TokenSpendingCacheSeconds = 60
+
 // temporary variable for sora patch, will be removed in future
 var TaskPricePatches []string
 

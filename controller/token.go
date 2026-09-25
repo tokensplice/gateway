@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -40,7 +41,14 @@ type tokenRequest struct {
 type tokenResponse struct {
 	*model.Token
 	AutoGroups []string `json:"auto_groups"`
+	// Warning carries a user-facing hint about the token's near expiry; empty
+	// when the token does not expire within model.ExpirationWarningDays.
+	Warning string `json:"warning,omitempty"`
 }
+
+// maxTokenUsageDays bounds the analytics window so a single request cannot scan
+// an arbitrary slice of the log table.
+const maxTokenUsageDays = 90
 
 func maxTokenQuota() int {
 	quota, err := common.WalletQuotaFromDecimalStrict(
@@ -52,7 +60,7 @@ func maxTokenQuota() int {
 	return quota
 }
 
-func buildMaskedTokenResponse(token *model.Token) *tokenResponse {
+func buildMaskedTokenResponse(c *gin.Context, token *model.Token) *tokenResponse {
 	if token == nil {
 		return nil
 	}
@@ -66,15 +74,46 @@ func buildMaskedTokenResponse(token *model.Token) *tokenResponse {
 	if len(autoGroups) == 0 {
 		autoGroups = nil
 	}
-	return &tokenResponse{Token: &maskedToken, AutoGroups: autoGroups}
+	response := &tokenResponse{Token: &maskedToken, AutoGroups: autoGroups}
+	if days := token.ExpirationWarning(common.GetTimestamp()); days > 0 {
+		response.Warning = common.TranslateMessage(c, i18n.MsgTokenExpiringSoon, map[string]any{"Days": days})
+	}
+	return response
 }
 
-func buildMaskedTokenResponses(tokens []*model.Token) []*tokenResponse {
+func buildMaskedTokenResponses(c *gin.Context, tokens []*model.Token) []*tokenResponse {
 	maskedTokens := make([]*tokenResponse, 0, len(tokens))
 	for _, token := range tokens {
-		maskedTokens = append(maskedTokens, buildMaskedTokenResponse(token))
+		maskedTokens = append(maskedTokens, buildMaskedTokenResponse(c, token))
 	}
 	return maskedTokens
+}
+
+// validateTokenPolicyFields checks the per-token throttling, spending cap, and
+// grouping fields. Every zero value keeps its "no limit" meaning, so payloads
+// from clients that predate these fields stay valid. Caps are quota amounts and
+// share the wallet-quota bound so they remain safe to render as JavaScript
+// numbers.
+func validateTokenPolicyFields(c *gin.Context, token *model.Token) bool {
+	if token.RateLimitRPM < 0 || token.RateLimitTPM < 0 {
+		common.ApiErrorI18n(c, i18n.MsgTokenRateLimitNegative)
+		return false
+	}
+	if token.DailySpendingCap < 0 || token.MonthlySpendingCap < 0 {
+		common.ApiErrorI18n(c, i18n.MsgTokenSpendingCapNegative)
+		return false
+	}
+	maxQuotaValue := int64(maxTokenQuota())
+	if token.DailySpendingCap > maxQuotaValue || token.MonthlySpendingCap > maxQuotaValue {
+		common.ApiErrorI18n(c, i18n.MsgTokenQuotaExceedMax, map[string]any{"Max": maxQuotaValue})
+		return false
+	}
+	token.GroupName = strings.TrimSpace(token.GroupName)
+	if len(token.GroupName) > model.MaxTokenGroupNameLength {
+		common.ApiErrorI18n(c, i18n.MsgTokenGroupNameTooLong, map[string]any{"Max": model.MaxTokenGroupNameLength})
+		return false
+	}
+	return true
 }
 
 func getTokenRequestUserGroup(c *gin.Context) (string, error) {
@@ -129,16 +168,86 @@ func setTokenAutoGroups(c *gin.Context, token *model.Token, groups []string) boo
 
 func GetAllTokens(c *gin.Context) {
 	userId := c.GetInt("id")
+	groupName := strings.TrimSpace(c.Query("group"))
 	pageInfo := common.GetPageQuery(c)
-	tokens, err := model.GetAllUserTokens(userId, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	tokens, total, err := model.GetAllUserTokens(userId, groupName, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	total, _ := model.CountUserTokens(userId)
 	pageInfo.SetTotal(int(total))
-	pageInfo.SetItems(buildMaskedTokenResponses(tokens))
+	pageInfo.SetItems(buildMaskedTokenResponses(c, tokens))
 	common.ApiSuccess(c, pageInfo)
+}
+
+// GetTokenGroups lists the distinct group labels the caller has assigned to
+// their tokens, for the dashboard's group filter.
+func GetTokenGroups(c *gin.Context) {
+	userId := c.GetInt("id")
+	groups, err := model.GetUserTokenGroups(userId)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if groups == nil {
+		groups = []string{}
+	}
+	common.ApiSuccess(c, gin.H{"groups": groups})
+}
+
+// GetTokenUsageAnalytics returns one token's consumption breakdown for the last
+// N days (default 7, maximum 90): totals, a UTC daily series, and its top models.
+func GetTokenUsageAnalytics(c *gin.Context) {
+	userId := c.GetInt("id")
+	tokenId, err := strconv.Atoi(c.Param("id"))
+	if err != nil || tokenId <= 0 {
+		common.ApiErrorI18n(c, i18n.MsgInvalidId)
+		return
+	}
+	token, err := model.GetTokenByIds(tokenId, userId)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	days, err := strconv.Atoi(c.DefaultQuery("days", "7"))
+	if err != nil || days <= 0 {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	days = min(days, maxTokenUsageDays)
+
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	startTime := today.AddDate(0, 0, -(days - 1)).Unix()
+	endTime := now.Unix()
+
+	totals, err := model.GetTokenUsageTotals(token.Id, userId, startTime, endTime)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	daily, err := model.GetTokenUsageDaily(token.Id, userId, startTime, endTime)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	topModels, err := model.GetTokenTopModels(token.Id, userId, startTime, endTime, 10)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	common.ApiSuccess(c, gin.H{
+		"token_id":   token.Id,
+		"token_name": token.Name,
+		"group_name": token.GroupName,
+		"days":       days,
+		"start_time": startTime,
+		"end_time":   endTime,
+		"total":      totals,
+		"daily":      daily,
+		"top_models": topModels,
+	})
 }
 
 func SearchTokens(c *gin.Context) {
@@ -154,7 +263,7 @@ func SearchTokens(c *gin.Context) {
 		return
 	}
 	pageInfo.SetTotal(int(total))
-	pageInfo.SetItems(buildMaskedTokenResponses(tokens))
+	pageInfo.SetItems(buildMaskedTokenResponses(c, tokens))
 	common.ApiSuccess(c, pageInfo)
 }
 
@@ -170,7 +279,7 @@ func GetToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, buildMaskedTokenResponse(token))
+	common.ApiSuccess(c, buildMaskedTokenResponse(c, token))
 }
 
 func GetTokenAutoGroups(c *gin.Context) {
@@ -301,6 +410,9 @@ func AddToken(c *gin.Context) {
 			return
 		}
 	}
+	if !validateTokenPolicyFields(c, &token) {
+		return
+	}
 	// 检查用户令牌数量是否已达上限
 	maxTokens := operation_setting.GetMaxUserTokens()
 	count, err := model.CountUserTokens(c.GetInt("id"))
@@ -344,6 +456,11 @@ func AddToken(c *gin.Context) {
 		Group:              token.Group,
 		CrossGroupRetry:    token.CrossGroupRetry,
 		AutoGroups:         token.AutoGroups,
+		RateLimitRPM:       token.RateLimitRPM,
+		RateLimitTPM:       token.RateLimitTPM,
+		DailySpendingCap:   token.DailySpendingCap,
+		MonthlySpendingCap: token.MonthlySpendingCap,
+		GroupName:          token.GroupName,
 	}
 	err = cleanToken.Insert()
 	if err != nil {
@@ -409,6 +526,9 @@ func UpdateToken(c *gin.Context) {
 			return
 		}
 	}
+	if !validateTokenPolicyFields(c, &token) {
+		return
+	}
 	cleanToken, err := model.GetTokenByIds(token.Id, userId)
 	if err != nil {
 		common.ApiError(c, err)
@@ -439,6 +559,11 @@ func UpdateToken(c *gin.Context) {
 		cleanToken.AllowIps = token.AllowIps
 		cleanToken.Group = token.Group
 		cleanToken.CrossGroupRetry = token.CrossGroupRetry
+		cleanToken.RateLimitRPM = token.RateLimitRPM
+		cleanToken.RateLimitTPM = token.RateLimitTPM
+		cleanToken.DailySpendingCap = token.DailySpendingCap
+		cleanToken.MonthlySpendingCap = token.MonthlySpendingCap
+		cleanToken.GroupName = token.GroupName
 		if token.Group != "auto" {
 			cleanToken.CrossGroupRetry = false
 			_ = cleanToken.SetAutoGroups(nil)
@@ -473,6 +598,11 @@ func UpdateToken(c *gin.Context) {
 			{"group", previous.Group != cleanToken.Group},
 			{"cross_group_retry", previous.CrossGroupRetry != cleanToken.CrossGroupRetry},
 			{"auto_groups", previous.AutoGroups != cleanToken.AutoGroups},
+			{"rate_limit_rpm", previous.RateLimitRPM != cleanToken.RateLimitRPM},
+			{"rate_limit_tpm", previous.RateLimitTPM != cleanToken.RateLimitTPM},
+			{"daily_spending_cap", previous.DailySpendingCap != cleanToken.DailySpendingCap},
+			{"monthly_spending_cap", previous.MonthlySpendingCap != cleanToken.MonthlySpendingCap},
+			{"group_name", previous.GroupName != cleanToken.GroupName},
 		} {
 			if field.changed {
 				changedFields = append(changedFields, field.name)
@@ -484,7 +614,7 @@ func UpdateToken(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    buildMaskedTokenResponse(cleanToken),
+		"data":    buildMaskedTokenResponse(c, cleanToken),
 	})
 }
 

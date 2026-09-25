@@ -60,6 +60,14 @@ const (
 	MsgTokenAutoGroupsTooMany    = "token.auto_groups_too_many"
 	MsgTokenAutoGroupsDuplicate  = "token.auto_groups_duplicate"
 	MsgTokenAutoGroupsInvalid    = "token.auto_groups_invalid"
+	MsgTokenRateLimitNegative    = "token.rate_limit_negative"
+	MsgTokenSpendingCapNegative  = "token.spending_cap_negative"
+	MsgTokenGroupNameTooLong     = "token.group_name_too_long"
+	MsgTokenRPMExceeded          = "token.rpm_exceeded"
+	MsgTokenTPMExceeded          = "token.tpm_exceeded"
+	MsgTokenDailyCapExceeded     = "token.daily_cap_exceeded"
+	MsgTokenMonthlyCapExceeded   = "token.monthly_cap_exceeded"
+	MsgTokenExpiringSoon         = "token.expiring_soon"
 )
 
 // Redemption related messages

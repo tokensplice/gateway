@@ -53,6 +53,14 @@ token.db_error: "Invalid token, database query error, please contact administrat
 token.auto_groups_too_many: "A token can select at most {{.Max}} Auto groups"
 token.auto_groups_duplicate: "Auto group {{.Group}} is duplicated"
 token.auto_groups_invalid: "Auto group {{.Group}} is unavailable or unauthorized"
+token.rate_limit_negative: "Rate limit values cannot be negative"
+token.spending_cap_negative: "Spending cap values cannot be negative"
+token.group_name_too_long: "Token group name is too long, maximum is {{.Max}} characters"
+token.rpm_exceeded: "Token rate limit exceeded: {{.Limit}} requests per minute, retry after {{.RetryAfter}} seconds"
+token.tpm_exceeded: "Token rate limit exceeded: {{.Limit}} tokens per minute, retry after {{.RetryAfter}} seconds"
+token.daily_cap_exceeded: "Token daily spending cap reached: {{.Used}} of {{.Cap}} quota used, resets at {{.ResetAt}}"
+token.monthly_cap_exceeded: "Token monthly spending cap reached: {{.Used}} of {{.Cap}} quota used, resets at {{.ResetAt}}"
+token.expiring_soon: "This token expires in {{.Days}} day(s)"
 
 # Redemption messages
 redemption.name_length: "Redemption code name length must be between 1-20"

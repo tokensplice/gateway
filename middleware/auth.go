@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -470,6 +471,37 @@ func TokenAuth() func(c *gin.Context) {
 			userGroup = tokenGroup
 		}
 		common.SetContextKey(c, constant.ContextKeyUsingGroup, userGroup)
+
+		// 令牌级限流与消费上限。两者都只在令牌（或部署默认值）配置了限制时才访问计数器，
+		// 未配置时立即放行，不会给中继请求增加额外开销。
+		if decision := service.CheckTokenRateLimit(c.Request.Context(), token); !decision.Allowed {
+			messageKey := i18n.MsgTokenRPMExceeded
+			if decision.Kind == service.TokenRateLimitTPM {
+				messageKey = i18n.MsgTokenTPMExceeded
+			}
+			c.Header("Retry-After", strconv.FormatInt(decision.RetryAfterSeconds, 10))
+			abortWithOpenAiMessage(c, http.StatusTooManyRequests,
+				common.TranslateMessage(c, messageKey, map[string]any{
+					"Limit":      decision.Limit,
+					"RetryAfter": decision.RetryAfterSeconds,
+				}),
+				types.ErrorCodeTokenRateLimitExceeded)
+			return
+		}
+		if exceeded := service.CheckTokenSpendingCaps(c.Request.Context(), token); exceeded != nil {
+			messageKey := i18n.MsgTokenDailyCapExceeded
+			if exceeded.Kind == service.SpendingCapMonthly {
+				messageKey = i18n.MsgTokenMonthlyCapExceeded
+			}
+			abortWithOpenAiMessage(c, http.StatusForbidden,
+				common.TranslateMessage(c, messageKey, map[string]any{
+					"Cap":     exceeded.Cap,
+					"Used":    exceeded.Used,
+					"ResetAt": time.Unix(exceeded.ResetAt, 0).UTC().Format("2006-01-02 15:04 UTC"),
+				}),
+				types.ErrorCodeTokenSpendingCapExceeded)
+			return
+		}
 
 		err = SetupContextForToken(c, token, parts...)
 		if err != nil {

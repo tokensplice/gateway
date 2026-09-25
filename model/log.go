@@ -383,6 +383,9 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	if err != nil {
 		logger.LogError(c, "failed to record log: "+err.Error())
 	}
+	if TokenConsumeRecorder != nil {
+		TokenConsumeRecorder(params.TokenId, params.Quota, params.PromptTokens, params.CompletionTokens)
+	}
 	if common.DataExportEnabled {
 		LogQuotaData(QuotaDataLogParams{
 			UserID:    userId,
@@ -441,6 +444,11 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 	err := createLog(log)
 	if err != nil {
 		common.SysLog("failed to record task billing log: " + err.Error())
+	}
+	// Task billing has no prompt/completion split, so only quota feeds the
+	// per-token spending counters.
+	if params.LogType == LogTypeConsume && TokenConsumeRecorder != nil {
+		TokenConsumeRecorder(params.TokenId, params.Quota, 0, 0)
 	}
 	if params.LogType == LogTypeConsume && common.DataExportEnabled {
 		nodeName := params.NodeName

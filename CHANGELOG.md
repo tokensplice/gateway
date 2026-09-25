@@ -8,6 +8,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Token management enhancement (rc.6): per-token throttling, spending caps, grouping, and usage analytics on top of the inherited token model limits, quota, and expiry
+  - Per-token rate limits `rate_limit_rpm` / `rate_limit_tpm` enforced before the relay in the token auth middleware, counted in fixed one-minute buckets shared through Redis (`token_rate:{token_id}:{minute}`, `token_tpm:{token_id}:{minute}`) or kept in process memory when Redis is disabled; exceeding a limit returns `429` with a `Retry-After` header and an OpenAI-style error body
+  - `TOKEN_DEFAULT_RATE_LIMIT_RPM` (default `0`) as the deployment-wide fallback for tokens without their own request limit; `0` on both sides means unthrottled, so the check costs nothing for existing tokens
+  - Per-token spending caps `daily_spending_cap` / `monthly_spending_cap` (quota, `0` = unlimited) enforced against the consume logs, cached in Redis or memory and refreshed at most every `TOKEN_SPENDING_CACHE_SECONDS` (default `60`); a reached cap returns `403` with the cap, the amount used, and the UTC reset time. Windows reset at `00:00 UTC` daily and on the 1st at `00:00 UTC` monthly
+  - Token grouping through the user-defined `group_name` label (max 50 characters), with `GET /api/token/?group=<name>` filtering and `GET /api/token/groups` listing a user's distinct labels
+  - Per-token usage analytics at `GET /api/token/:id/usage?days=7` (1-90 days) returning total requests, prompt/completion/total tokens, quota spent, a UTC daily breakdown, and the top models by quota
+  - Token list and detail responses now carry a `warning` field when a token expires within 7 days
+  - Both counters and the log-derived totals fail open: a Redis or log outage admits the request instead of blocking traffic
 - Multi-currency billing display (rc.3): internal billing stays in quota, but prices and balances can be shown in the user's preferred currency
   - `currency_rates` table with unique (base, target) pairs, auto-seeded on first boot with USD→HKD/CNY/EUR/GBP/JPY/KRW/SGD/TWD default rates
   - Automatic exchange rate refresh from `open.er-api.com` every 24 hours via the system task framework; on failure existing rates are kept and flagged `rate_ok=false`; admin-set manual rates are never overwritten by auto-update

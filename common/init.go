@@ -239,6 +239,11 @@ func initConstantEnv() {
 	constant.MetricsEnabled = GetEnvOrDefaultBool("METRICS_ENABLED", true)
 	constant.MetricsToken = strings.TrimSpace(GetEnvOrDefaultString("METRICS_TOKEN", ""))
 
+	// 令牌级限流与消费上限：令牌未设置 RPM 时回落到部署级默认值；
+	// 消费总额缓存秒数决定日上限/月上限判定允许的最大滞后。
+	constant.TokenDefaultRateLimitRPM = max(GetEnvOrDefault("TOKEN_DEFAULT_RATE_LIMIT_RPM", 0), 0)
+	constant.TokenSpendingCacheSeconds = max(GetEnvOrDefault("TOKEN_SPENDING_CACHE_SECONDS", 60), 1)
+
 	soraPatchStr := GetEnvOrDefaultString("TASK_PRICE_PATCH", "")
 	if soraPatchStr != "" {
 		var taskPricePatches []string

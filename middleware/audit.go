@@ -255,6 +255,49 @@ func TokenOperationAudit() gin.HandlerFunc {
 	}
 }
 
+// ByokKeyAudit records the lifecycle of a customer's own upstream credential.
+// BYOK keys are API credentials, so their create / rotate / delete / validate
+// events belong in the same security audit trail as dashboard tokens (OWASP
+// ASVS V7.2). Only non-secret context is persisted: the key id and the
+// provider. The submitted key and the decrypted value never reach the entry,
+// and the captured response body is inspected for its success flag only, never
+// stored.
+func ByokKeyAudit() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var action, content string
+		switch c.Request.Method + " " + c.FullPath() {
+		case "POST /api/byok/keys":
+			action, content = "byok.key_create", "BYOK key creation"
+		case "PUT /api/byok/keys/:id":
+			action, content = "byok.key_update", "BYOK key update or rotation"
+		case "DELETE /api/byok/keys/:id":
+			action, content = "byok.key_delete", "BYOK key deletion"
+		case "POST /api/byok/keys/:id/test":
+			action, content = "byok.key_test", "BYOK key validation against the provider"
+		default:
+			c.Next()
+			return
+		}
+
+		params := model.AuditFields{}
+		// Key ids are snowflake values that exceed int32, so they stay strings.
+		if rawId := c.Param("id"); rawId != "" {
+			params["key_id"] = rawId
+		}
+		entry := model.AuditLog{
+			UserId: c.GetInt("id"), Username: c.GetString("username"), ActorRole: c.GetInt("role"),
+			Category: model.AuditCategorySecurity, Action: action, Content: content,
+			Other: model.AuditOther{Op: &model.AuditOperation{Action: action, Params: params}},
+		}
+		writer := &auditResponseWriter{ResponseWriter: c.Writer, body: bytes.NewBuffer(nil), maxSize: 64 * 1024}
+		c.Writer = writer
+		c.Next()
+		entry.Status = writer.Status()
+		entry.Success = auditResponseSuccess(entry.Status, writer.body.Bytes())
+		model.RecordAuditLog(c, entry)
+	}
+}
+
 type accessTokenRequestAudit struct {
 	entry  model.AuditLog
 	writer *auditResponseWriter

@@ -62,6 +62,7 @@ func InitOptionMap() {
 	jsplugin.DefaultRegistry.SetDisabledFactoryKeys(nil)
 	common.OptionMap["DataExportEnabled"] = strconv.FormatBool(common.DataExportEnabled)
 	common.OptionMap["ChannelDisableThreshold"] = strconv.FormatFloat(common.ChannelDisableThreshold, 'f', -1, 64)
+	common.OptionMap[operation_setting.ByokFeePercentOptionKey] = strconv.FormatFloat(operation_setting.ByokFeePercent, 'f', -1, 64)
 	common.OptionMap["EmailDomainRestrictionEnabled"] = strconv.FormatBool(common.EmailDomainRestrictionEnabled)
 	common.OptionMap["EmailAliasRestrictionEnabled"] = strconv.FormatBool(common.EmailAliasRestrictionEnabled)
 	common.OptionMap["EmailDomainWhitelist"] = strings.Join(common.EmailDomainWhitelist, ",")
@@ -239,6 +240,9 @@ func validateOptionValue(key string, value string) error {
 	}
 	if key == "MaxTokenAutoGroups" {
 		return setting.ValidateMaxTokenAutoGroups(value)
+	}
+	if key == operation_setting.ByokFeePercentOptionKey {
+		return operation_setting.ValidateByokFeePercent(value)
 	}
 	return nil
 }
@@ -656,6 +660,13 @@ func updateOptionMap(key string, value string) (err error) {
 	//	common.ChatLink2 = value
 	case "ChannelDisableThreshold":
 		common.ChannelDisableThreshold, _ = strconv.ParseFloat(value, 64)
+	case operation_setting.ByokFeePercentOptionKey:
+		parsed, parseErr := strconv.ParseFloat(value, 64)
+		if parseErr != nil {
+			err = parseErr
+			break
+		}
+		operation_setting.ByokFeePercent = operation_setting.ClampByokFeePercent(parsed)
 	case "QuotaPerUnit":
 		common.QuotaPerUnit, _ = strconv.ParseFloat(value, 64)
 	case "SensitiveWords":

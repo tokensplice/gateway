@@ -112,6 +112,14 @@ type User struct {
 	LastLoginAt          int64                      `json:"last_login_at" gorm:"default:0;column:last_login_at"`
 	AuthVersion          int64                      `json:"-" gorm:"type:bigint;not null;default:1;column:auth_version"`
 	AdminPermissions     map[string]map[string]bool `json:"admin_permissions,omitempty" gorm:"-:all"`
+
+	// ByokFeeOverride is the per-user BYOK platform fee percentage.
+	// operation_setting.ByokFeeNoOverride (-1) means "inherit the global
+	// ByokFeePercent option"; a value in [0, 20] is an explicit admin override.
+	// It is deliberately not part of UserBase yet: the relay settlement path
+	// that reads it is wired up in rc.4, which must add the field there and
+	// bump cacheSchema in the same change.
+	ByokFeeOverride float64 `json:"byok_fee_override" gorm:"default:-1;column:byok_fee_override"`
 }
 
 func (user *User) ToBaseUser() *UserBase {
@@ -209,6 +217,43 @@ func UpdateUserSetting(userId int, setting dto.UserSetting) error {
 		return err
 	}
 	return updateUserSettingCache(userId, settingValue)
+}
+
+// GetUserByokFeeOverride reads only the BYOK fee column. It returns the
+// operation_setting.ByokFeeNoOverride sentinel when the user inherits the
+// global option, and gorm.ErrRecordNotFound when the user does not exist.
+func GetUserByokFeeOverride(userId int64) (float64, error) {
+	var overrides []float64
+	err := DB.Model(&User{}).Where("id = ?", userId).Pluck("byok_fee_override", &overrides).Error
+	if err != nil {
+		return operation_setting.ByokFeeNoOverride, err
+	}
+	if len(overrides) == 0 {
+		return operation_setting.ByokFeeNoOverride, gorm.ErrRecordNotFound
+	}
+	return overrides[0], nil
+}
+
+// UpdateUserByokFeeOverride writes the per-user BYOK fee override. It is a
+// column-scoped update on purpose: Updates(struct) skips zero values, which
+// would silently drop an explicit 0% override.
+func UpdateUserByokFeeOverride(userId int64, percent float64) error {
+	if userId <= 0 {
+		return errors.New("id 为空！")
+	}
+	if percent != operation_setting.ByokFeeNoOverride {
+		if err := operation_setting.ValidateByokFeePercent(strconv.FormatFloat(percent, 'f', -1, 64)); err != nil {
+			return err
+		}
+	}
+	result := DB.Model(&User{}).Where("id = ?", userId).Update("byok_fee_override", percent)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 // userBindColumns 允许通过 UpdateUserBindColumn 更新的第三方账号绑定列白名单。

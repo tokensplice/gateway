@@ -23,6 +23,7 @@ func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(midjourneyPollHandler{})
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
 	service.RegisterSystemTaskHandler(currencyRateRefreshHandler{})
+	service.RegisterSystemTaskHandler(webhookMaintenanceHandler{})
 }
 
 // currencyRateRefreshHandler runs the periodic display exchange rate refresh.
@@ -46,6 +47,33 @@ func (currencyRateRefreshHandler) Run(ctx context.Context, task *model.SystemTas
 		return
 	}
 	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, map[string]int{"updated": updated}, nil)
+}
+
+// webhookMaintenanceHandler is the periodic housekeeping pass for outbound
+// event webhooks: it raises token.expiring for tokens that entered the warning
+// window and purges delivery rows past the retention horizon. Both halves are
+// idempotent, so the system task lease — one run per interval across masters —
+// is all the coordination they need. Delivery retries are deliberately not
+// here: their backoff starts at one second, far below any sensible scheduled
+// interval, so they are carried by an in-process timer with a sweeper in
+// service.StartWebhookDispatcher as the restart recovery path.
+type webhookMaintenanceHandler struct{}
+
+func (webhookMaintenanceHandler) Type() string { return model.SystemTaskTypeWebhookMaintenance }
+
+func (webhookMaintenanceHandler) Enabled() bool { return constant.WebhookEnabled }
+
+func (webhookMaintenanceHandler) Interval() time.Duration { return time.Hour }
+
+func (webhookMaintenanceHandler) NewPayload() any { return nil }
+
+func (webhookMaintenanceHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	result, err := service.RunWebhookMaintenance(ctx)
+	if err != nil {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, result, err)
+		return
+	}
+	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, result, nil)
 }
 
 // channelTestHandler runs the scheduled "test all channels" job. Enablement and

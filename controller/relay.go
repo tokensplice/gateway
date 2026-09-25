@@ -89,6 +89,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	defer func() {
 		if newAPIError != nil {
+			// Raised here rather than per attempt, so a customer subscribed to
+			// request.error sees one event for a request that finally failed
+			// instead of one for every channel it was retried against. The
+			// dispatch reads this context and then leaves the request path.
+			service.DispatchRequestErrorEvent(c, newAPIError, requestId)
 			service.RecordRequestPolicyTermination(c, newAPIError)
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
 			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))

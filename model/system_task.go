@@ -25,6 +25,11 @@ const (
 	// SystemTaskTypeCurrencyRateRefresh periodically re-fetches display
 	// exchange rates from the configured public rate API.
 	SystemTaskTypeCurrencyRateRefresh = "currency_rate_refresh"
+
+	// SystemTaskTypeWebhookMaintenance raises token.expiring for tokens that
+	// entered the warning window and purges webhook delivery rows past the
+	// retention horizon.
+	SystemTaskTypeWebhookMaintenance = "webhook_maintenance"
 )
 
 var ErrSystemTaskLockLost = errors.New("system task lock lost")

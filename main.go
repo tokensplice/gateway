@@ -128,6 +128,11 @@ func main() {
 	// relay request to touch the same row.
 	go service.StartMetricsGaugeSync(common.SyncFrequency)
 
+	// Start the outbound event webhook delivery pool before anything can
+	// dispatch an event: a delivery recorded while the pool is down would be
+	// closed out instead of sent.
+	service.StartWebhookDispatcher()
+
 	if os.Getenv("CHANNEL_UPDATE_FREQUENCY") != "" {
 		frequency, err := strconv.Atoi(os.Getenv("CHANNEL_UPDATE_FREQUENCY"))
 		if err != nil {

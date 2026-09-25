@@ -244,6 +244,14 @@ func initConstantEnv() {
 	constant.TokenDefaultRateLimitRPM = max(GetEnvOrDefault("TOKEN_DEFAULT_RATE_LIMIT_RPM", 0), 0)
 	constant.TokenSpendingCacheSeconds = max(GetEnvOrDefault("TOKEN_SPENDING_CACHE_SECONDS", 60), 1)
 
+	// 出站事件 Webhook：总开关、投递协程池规模、单次投递超时、失败重试次数
+	// 以及投递记录的保留天数。队列写满不会阻塞调用方，未投递的记录由清扫任务补投。
+	constant.WebhookEnabled = GetEnvOrDefaultBool("WEBHOOK_ENABLED", true)
+	constant.WebhookMaxWorkers = max(GetEnvOrDefault("WEBHOOK_MAX_WORKERS", 10), 1)
+	constant.WebhookTimeoutSeconds = max(GetEnvOrDefault("WEBHOOK_TIMEOUT_SECONDS", 10), 1)
+	constant.WebhookMaxRetries = max(GetEnvOrDefault("WEBHOOK_MAX_RETRIES", 5), 0)
+	constant.WebhookDeliveryRetentionDays = max(GetEnvOrDefault("WEBHOOK_DELIVERY_RETENTION_DAYS", 30), 1)
+
 	soraPatchStr := GetEnvOrDefaultString("TASK_PRICE_PATCH", "")
 	if soraPatchStr != "" {
 		var taskPricePatches []string

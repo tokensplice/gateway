@@ -511,6 +511,27 @@ func checkAndSendQuotaNotify(relayInfo *relaycommon.RelayInfo, quota int, preCon
 			quotaTooLow = true
 		}
 		if quotaTooLow {
+			// The threshold that drives the email/notify warning also drives
+			// the webhook events, so a deployment configures one number. A
+			// balance that reached zero is reported as exhausted rather than
+			// low, so a receiver paging on "out of balance" does not have to
+			// compare two different payloads. This runs inside the gopool
+			// goroutine the notification already uses, never on the request
+			// path.
+			remainingQuota := int64(relayInfo.UserQuota - consumeQuota)
+			if remainingQuota <= 0 {
+				DispatchEvent(int64(relayInfo.UserId), constant.WebhookEventQuotaExhausted, QuotaExhaustedEventData{
+					UserId:         int64(relayInfo.UserId),
+					RemainingQuota: max(remainingQuota, 0),
+				})
+			} else {
+				DispatchEvent(int64(relayInfo.UserId), constant.WebhookEventQuotaLow, QuotaLowEventData{
+					UserId:         int64(relayInfo.UserId),
+					RemainingQuota: remainingQuota,
+					Threshold:      int64(threshold),
+				})
+			}
+
 			prompt := "您的额度即将用尽"
 			topUpLink := PaymentReturnURL("/wallet")
 

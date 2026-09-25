@@ -373,6 +373,8 @@ func migrateDB() error {
 		&ByokKey{},
 		&ByokUsage{},
 		&CurrencyRate{},
+		&Webhook{},
+		&WebhookDelivery{},
 	)
 	if err != nil {
 		return err

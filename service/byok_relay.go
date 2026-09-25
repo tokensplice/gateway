@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 	hosttypes "github.com/QuantumNous/new-api/types"
 
+	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-gonic/gin"
 )
 
@@ -335,6 +336,18 @@ func (r *ByokRoute) RecordFailure(ctx *gin.Context, apiErr *types.NewAPIError) {
 		} else {
 			logger.LogWarn(ctx, "byok: key %d of user %d was rejected by %s (HTTP %d) and is now marked invalid",
 				r.KeyId, r.UserId, r.Provider, statusCode)
+			// The customer's own credential was rejected, so this is a
+			// tenant-scoped event that goes only to that owner's endpoints. It
+			// is dispatched off the request path because a BYOK failure still
+			// has to fall through to a managed channel promptly, and the reason
+			// is already masked above.
+			gopool.Go(func() {
+				DispatchEvent(r.UserId, constant.WebhookEventByokKeyInvalid, ByokKeyInvalidEventData{
+					ByokKeyId: hosttypes.NewFlexInt64(r.KeyId),
+					Provider:  r.Provider,
+					Error:     reason,
+				})
+			})
 		}
 	}
 

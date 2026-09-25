@@ -42,6 +42,29 @@ var TokenDefaultRateLimitRPM int
 // total is served from cache before it is recomputed from the consume logs.
 var TokenSpendingCacheSeconds = 60
 
+// WebhookEnabled is the master switch for the outbound event webhook system.
+// Default on: a deployment that never registers a webhook pays one indexed
+// lookup per event and nothing else.
+var WebhookEnabled = true
+
+// WebhookMaxWorkers sizes the goroutine pool that delivers webhook events and
+// the queue that feeds it. A full queue never blocks the caller: the delivery
+// row keeps its scheduled retry and the sweep re-queues it later.
+var WebhookMaxWorkers = 10
+
+// WebhookTimeoutSeconds is the whole-request timeout of one delivery attempt,
+// covering DNS, connect, TLS, write, and the receiver's response headers.
+var WebhookTimeoutSeconds = 10
+
+// WebhookMaxRetries is how many times a failed delivery is retried after the
+// first attempt, so the default of 5 allows up to 6 sends spaced by the
+// exponential backoff schedule. Zero disables retrying.
+var WebhookMaxRetries = 5
+
+// WebhookDeliveryRetentionDays is how long webhook_deliveries rows are kept
+// before the maintenance task deletes them.
+var WebhookDeliveryRetentionDays = 30
+
 // temporary variable for sora patch, will be removed in future
 var TaskPricePatches []string
 

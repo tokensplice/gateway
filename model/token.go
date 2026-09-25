@@ -65,6 +65,20 @@ func (token *Token) ExpirationWarning(now int64) int64 {
 	return (remaining + 24*3600 - 1) / (24 * 3600)
 }
 
+// GetTokensExpiringForUser lists one user's tokens whose expiry falls inside
+// [from, to] as unix seconds. Never-expiring tokens carry ExpiredTime -1 and so
+// are excluded by the lower bound, which the caller sets to "now". The
+// webhook sweep uses it to raise token.expiring over exactly the window
+// ExpirationWarning describes.
+func GetTokensExpiringForUser(userId int, from int64, to int64) ([]*Token, error) {
+	var tokens []*Token
+	err := DB.Select("id", "user_id", "name", "expired_time", "status").
+		Where("user_id = ? AND expired_time > ? AND expired_time <= ?", userId, from, to).
+		Order("expired_time ASC, id ASC").
+		Find(&tokens).Error
+	return tokens, err
+}
+
 func (token *Token) GetAutoGroups() ([]string, error) {
 	if token.AutoGroups == "" {
 		return nil, nil

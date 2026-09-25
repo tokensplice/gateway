@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/metrics"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -47,6 +48,15 @@ func DisableChannel(channelError types.ChannelError, reason string) {
 		subject := fmt.Sprintf("通道「%s」（#%d）已被禁用", channelError.ChannelName, channelError.ChannelId)
 		content := fmt.Sprintf("通道「%s」（#%d）已被禁用，原因：%s", channelError.ChannelName, channelError.ChannelId, reason)
 		NotifyRootUser(formatNotifyType(channelError.ChannelId, common.ChannelStatusAutoDisabled), subject, content)
+		// Channel health describes the platform rather than one tenant, so it
+		// goes to administrators' webhook endpoints only. The reason is already
+		// masked by the caller, which is what keeps an upstream-echoed
+		// credential out of a customer's receiver.
+		DispatchAdminEvent(constant.WebhookEventChannelDown, ChannelDownEventData{
+			ChannelId:   channelError.ChannelId,
+			ChannelName: channelError.ChannelName,
+			Error:       reason,
+		})
 	}
 }
 
@@ -57,6 +67,10 @@ func EnableChannel(channelId int, usingKey string, channelName string) {
 		subject := fmt.Sprintf("通道「%s」（#%d）已被启用", channelName, channelId)
 		content := fmt.Sprintf("通道「%s」（#%d）已被启用", channelName, channelId)
 		NotifyRootUser(formatNotifyType(channelId, common.ChannelStatusEnabled), subject, content)
+		DispatchAdminEvent(constant.WebhookEventChannelRecovered, ChannelRecoveredEventData{
+			ChannelId:   channelId,
+			ChannelName: channelName,
+		})
 	}
 }
 

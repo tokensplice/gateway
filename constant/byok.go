@@ -22,6 +22,24 @@ const (
 	ByokKeyStatusActive   = 1  // eligible for routing
 )
 
+// BYOK shadow channels.
+//
+// A BYOK request is served by an ephemeral in-memory *model.Channel that is
+// never persisted. It reports a negative id so it can never collide with a
+// real channel row (ids are positive), which keeps the accounting writes on
+// the relay path — used-quota updates, auto-disable, channel affinity — from
+// ever touching a managed channel because of a customer key.
+const (
+	// ByokShadowChannelIdBase is the most negative id a shadow channel can
+	// report. Real ids stay above zero, so the whole band below the base is
+	// reserved.
+	ByokShadowChannelIdBase = -1_000_000_000
+	// byokShadowChannelIdSpread bounds the per-key offset inside the band. A
+	// key id is a snowflake, so only its low digits are folded in; the id is a
+	// logging and metrics handle, not a lookup key.
+	byokShadowChannelIdSpread = 1_000_000
+)
+
 // ByokProviders lists every accepted provider value, ordered for stable
 // validation messages.
 var ByokProviders = []string{
@@ -42,6 +60,18 @@ var byokChannelTypeProviders = map[int]string{
 	ChannelTypeMistral:   ByokProviderMistral,
 }
 
+// byokProviderChannelTypes is the reverse of byokChannelTypeProviders, pinned
+// to the vendor's own channel type so a shadow channel selects the adaptor
+// that speaks that vendor's native protocol. ByokProviderCustom is absent on
+// purpose: an operator-supplied upstream has no fixed base URL, so it cannot be
+// relayed until one is stored beside the key.
+var byokProviderChannelTypes = map[string]int{
+	ByokProviderOpenAI:    ChannelTypeOpenAI,
+	ByokProviderAnthropic: ChannelTypeAnthropic,
+	ByokProviderGoogle:    ChannelTypeGemini,
+	ByokProviderMistral:   ChannelTypeMistral,
+}
+
 // IsByokProvider reports whether name is a supported BYOK provider.
 func IsByokProvider(name string) bool {
 	switch name {
@@ -56,4 +86,28 @@ func IsByokProvider(name string) bool {
 // returning "" when the channel is a reseller or an incompatible transport.
 func ByokProviderForChannelType(channelType int) string {
 	return byokChannelTypeProviders[channelType]
+}
+
+// ByokChannelTypeForProvider resolves the channel type whose adaptor speaks a
+// BYOK provider's own API, returning 0 when the provider cannot be relayed. A
+// zero result means the provider's key can be stored but not routed.
+func ByokChannelTypeForProvider(provider string) int {
+	return byokProviderChannelTypes[provider]
+}
+
+// ByokShadowChannelId derives the stable negative channel id a BYOK attempt
+// reports. The same key always maps to the same id, so retries, logs, and
+// metrics can be correlated without ever looking like a managed channel.
+func ByokShadowChannelId(keyId int64) int {
+	if keyId < 0 {
+		keyId = -keyId
+	}
+	return ByokShadowChannelIdBase - int(keyId%byokShadowChannelIdSpread)
+}
+
+// IsByokShadowChannelId reports whether a channel id belongs to a BYOK shadow
+// channel rather than to a persisted managed channel.
+func IsByokShadowChannelId(channelId int) bool {
+	return channelId <= ByokShadowChannelIdBase &&
+		channelId > ByokShadowChannelIdBase-byokShadowChannelIdSpread
 }

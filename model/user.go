@@ -116,24 +116,25 @@ type User struct {
 	// ByokFeeOverride is the per-user BYOK platform fee percentage.
 	// operation_setting.ByokFeeNoOverride (-1) means "inherit the global
 	// ByokFeePercent option"; a value in [0, 20] is an explicit admin override.
-	// It is deliberately not part of UserBase yet: the relay settlement path
-	// that reads it is wired up in rc.4, which must add the field there and
-	// bump cacheSchema in the same change.
+	// It is part of the cached UserBase because BYOK settlement resolves it on
+	// the relay path; any change to the field or its meaning must bump
+	// userCacheSchemaVersion so a stale hash is not read back as an override.
 	ByokFeeOverride float64 `json:"byok_fee_override" gorm:"default:-1;column:byok_fee_override"`
 }
 
 func (user *User) ToBaseUser() *UserBase {
 	cache := &UserBase{
-		Id:          user.Id,
-		Group:       user.Group,
-		Quota:       user.Quota,
-		Status:      user.Status,
-		Role:        user.Role,
-		Username:    user.Username,
-		Setting:     user.Setting,
-		Email:       user.Email,
-		AuthVersion: user.AuthVersion,
-		CacheSchema: userCacheSchemaVersion,
+		Id:              user.Id,
+		Group:           user.Group,
+		Quota:           user.Quota,
+		Status:          user.Status,
+		Role:            user.Role,
+		Username:        user.Username,
+		Setting:         user.Setting,
+		Email:           user.Email,
+		ByokFeeOverride: user.ByokFeeOverride,
+		AuthVersion:     user.AuthVersion,
+		CacheSchema:     userCacheSchemaVersion,
 	}
 	return cache
 }
@@ -234,6 +235,22 @@ func GetUserByokFeeOverride(userId int64) (float64, error) {
 	return overrides[0], nil
 }
 
+// GetUserByokFeeOverrideCached is the relay-path accessor for the override. It
+// reads the cached UserBase when one is warm, so a BYOK settlement costs no
+// extra query, and falls back to the column read on a cache miss or a pending
+// authentication-state fence. The fallback reads the database, which is fresher
+// than any snapshot the fence is guarding, so it cannot re-authorize stale
+// state.
+func GetUserByokFeeOverrideCached(userId int64) (float64, error) {
+	if userId <= 0 {
+		return GetUserByokFeeOverride(userId)
+	}
+	if cache, err := GetUserCache(int(userId)); err == nil && cache != nil {
+		return cache.ByokFeeOverride, nil
+	}
+	return GetUserByokFeeOverride(userId)
+}
+
 // UpdateUserByokFeeOverride writes the per-user BYOK fee override. It is a
 // column-scoped update on purpose: Updates(struct) skips zero values, which
 // would silently drop an explicit 0% override.
@@ -252,6 +269,12 @@ func UpdateUserByokFeeOverride(userId int64, percent float64) error {
 	}
 	if result.RowsAffected == 0 {
 		return gorm.ErrRecordNotFound
+	}
+	// The override is part of the cached UserBase, so the hash is dropped rather
+	// than patched: the next read repopulates every field from the row that was
+	// just written, and the write is already durable either way.
+	if err := invalidateUserCache(int(userId)); err != nil {
+		common.SysError(fmt.Sprintf("failed to invalidate user cache after updating the byok fee override for user %d: %v", userId, err))
 	}
 	return nil
 }

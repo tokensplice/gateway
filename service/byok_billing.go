@@ -18,8 +18,9 @@ import (
 //
 // The notional cost itself is produced by the ordinary managed pricing path and
 // is only available once a request has been routed and its usage measured, so
-// this file stays pure arithmetic. rc.4 supplies the notional cost from the
-// relay settlement step described in service/byok_router.go.
+// this file stays pure arithmetic. PostTextConsumeQuota and
+// PostAudioConsumeQuota supply the notional cost at settlement and charge the
+// result instead; see service/byok_relay.go.
 
 // CalculateByokFee returns the quota to charge for a BYOK-routed request.
 //
@@ -61,15 +62,15 @@ func CalculateByokFeeChecked(notionalQuotaCost int64, feePercent float64) (int64
 // their admin-set override when there is one, otherwise the global
 // ByokFeePercent option. The result is always inside the supported band.
 //
-// The override lives in users.byok_fee_override and is not part of the UserBase
-// cache yet, so this reads through to the database. rc.4 must add the field to
-// UserBase and bump cacheSchema before this is called on the relay hot path.
+// The override lives in users.byok_fee_override and is carried by the cached
+// UserBase, so resolving it on the relay path costs no extra query when the
+// user cache is warm.
 func ResolveByokFeePercent(userId int64) (float64, error) {
 	globalPercent := operation_setting.ClampByokFeePercent(operation_setting.ByokFeePercent)
 	if userId <= 0 {
 		return 0, errors.New("byok: user id must be positive")
 	}
-	override, err := model.GetUserByokFeeOverride(userId)
+	override, err := model.GetUserByokFeeOverrideCached(userId)
 	if err != nil {
 		return 0, err
 	}

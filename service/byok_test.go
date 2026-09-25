@@ -1,17 +1,27 @@
 package service
 
 import (
+	"errors"
+	"fmt"
 	"math"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	hostdto "github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	kittype "github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	hosttypes "github.com/QuantumNous/new-api/types"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -219,10 +229,10 @@ func TestDetectByokProviderFromModelName(t *testing.T) {
 	}
 }
 
-// TestFindMatchingByokKey covers the routing decision that rc.4 will call from
-// the relay loop: the configured channel mapping is authoritative, only the
-// requesting user's own active keys are eligible, and several keys for one
-// provider share the traffic.
+// TestFindMatchingByokKey covers the routing decision the relay loop calls
+// through BeginByokAttempt: the configured channel mapping is authoritative,
+// only the requesting user's own active keys are eligible, and several keys for
+// one provider share the traffic.
 func TestFindMatchingByokKey(t *testing.T) {
 	truncateByok(t)
 	original := common.CryptoSecret
@@ -416,18 +426,283 @@ func TestByokKeyIDIsSnowflake(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// BYOK relay integration (rc.4)
+// ---------------------------------------------------------------------------
+
+// TestByokShadowChannelRouting pins the routing contract the relay loop depends
+// on: a matching key produces an ephemeral channel that speaks the vendor's own
+// API and can never be confused with a managed channel, a request makes exactly
+// one BYOK attempt so the managed fallback cannot loop, and everything out of
+// scope falls through untouched.
+func TestByokShadowChannelRouting(t *testing.T) {
+	truncateByok(t)
+	original := common.CryptoSecret
+	common.CryptoSecret = "byok-test-master-secret"
+	t.Cleanup(func() { common.CryptoSecret = original })
+	originalFee := operation_setting.ByokFeePercent
+	operation_setting.ByokFeePercent = 5
+	t.Cleanup(func() { operation_setting.ByokFeePercent = originalFee })
+
+	const userID = 6001
+	seedUser(t, userID, 1_000_000)
+	require.NoError(t, model.UpdateUserByokFeeOverride(int64(userID), operation_setting.ByokFeeNoOverride))
+
+	seedByokChannel(t, 930, constant.ChannelTypeOpenAI, "gpt-4o")
+	key := newByokKeyFixture(int64(userID), constant.ByokProviderOpenAI, "sk-byok-shadow-secret", constant.ByokKeyStatusActive)
+	require.NoError(t, model.InsertByokKey(key))
+
+	newInfo := func(format kittype.RelayFormat, modelName string) *relaycommon.RelayInfo {
+		return &relaycommon.RelayInfo{
+			UserId:          userID,
+			OriginModelName: modelName,
+			RelayFormat:     format,
+			UsingGroup:      "default",
+			UserGroup:       "default",
+		}
+	}
+	newContext := func() *gin.Context {
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		return ctx
+	}
+
+	t.Run("matched key becomes a vendor-native shadow channel", func(t *testing.T) {
+		ctx := newContext()
+		route := BeginByokAttempt(ctx, newInfo(kittype.RelayFormatOpenAI, "gpt-4o"))
+		require.NotNil(t, route)
+		assert.Same(t, route, CurrentByokRoute(ctx))
+		assert.Equal(t, key.ID, route.KeyId)
+		assert.Equal(t, 5.0, route.FeePercent)
+
+		shadow := route.Channel
+		require.NotNil(t, shadow)
+		assert.Equal(t, constant.ChannelTypeOpenAI, shadow.Type)
+		assert.Equal(t, "https://api.openai.com", shadow.GetBaseURL(), "the customer key must reach the vendor's own endpoint")
+		assert.True(t, constant.IsByokShadowChannelId(shadow.Id))
+		assert.Negative(t, shadow.Id, "a shadow channel id can never collide with a managed channel row")
+		assert.False(t, shadow.GetAutoBan(), "a rejected customer key must never disable a platform channel")
+
+		selectedKey, index, apiErr := shadow.GetNextEnabledKey()
+		require.Nil(t, apiErr)
+		assert.Equal(t, 0, index)
+		assert.Equal(t, "sk-byok-shadow-secret", selectedKey, "the adaptor authenticates with the decrypted customer key")
+	})
+
+	t.Run("a request makes at most one BYOK attempt", func(t *testing.T) {
+		ctx := newContext()
+		require.NotNil(t, BeginByokAttempt(ctx, newInfo(kittype.RelayFormatOpenAI, "gpt-4o")))
+		assert.Nil(t, BeginByokAttempt(ctx, newInfo(kittype.RelayFormatOpenAI, "gpt-4o")),
+			"the managed fallback must not re-enter the BYOK path")
+		assert.Nil(t, CurrentByokRoute(ctx))
+	})
+
+	t.Run("out of scope requests fall through", func(t *testing.T) {
+		assert.Nil(t, BeginByokAttempt(newContext(), newInfo(kittype.RelayFormatOpenAIResponses, "gpt-4o")),
+			"the Responses protocol is not served by a shadow channel")
+		assert.Nil(t, BeginByokAttempt(newContext(), newInfo(kittype.RelayFormatEmbedding, "gpt-4o")))
+		assert.Nil(t, BeginByokAttempt(newContext(), newInfo(kittype.RelayFormatOpenAI, "deepseek-chat")),
+			"a model with no matching provider keeps using managed channels")
+
+		unknownUser := newInfo(kittype.RelayFormatOpenAI, "gpt-4o")
+		unknownUser.UserId = 6002
+		assert.Nil(t, BeginByokAttempt(newContext(), unknownUser), "a user without a key of their own borrows nobody's")
+
+		pinned := newContext()
+		GetChannelConstraints(pinned).AddPin(hostdto.ChannelPin{ChannelId: 930, Source: hostdto.PinSourceToken})
+		assert.Nil(t, BeginByokAttempt(pinned, newInfo(kittype.RelayFormatOpenAI, "gpt-4o")),
+			"an explicitly pinned channel is an operator decision BYOK must not override")
+	})
+
+	t.Run("claude and gemini protocols resolve to their own vendor channel", func(t *testing.T) {
+		require.NoError(t, model.InsertByokKey(newByokKeyFixture(int64(userID), constant.ByokProviderAnthropic, "sk-ant-byok-secret", constant.ByokKeyStatusActive)))
+		seedByokChannel(t, 931, constant.ChannelTypeAnthropic, "claude-sonnet-4-5")
+
+		ctx := newContext()
+		route := BeginByokAttempt(ctx, newInfo(kittype.RelayFormatClaude, "claude-sonnet-4-5"))
+		require.NotNil(t, route)
+		assert.Equal(t, constant.ChannelTypeAnthropic, route.Channel.Type)
+		assert.Equal(t, "https://api.anthropic.com", route.Channel.GetBaseURL())
+		assert.NotEqual(t, constant.ByokShadowChannelId(key.ID), route.Channel.Id,
+			"each key keeps a stable, distinguishable shadow id")
+	})
+}
+
+// TestByokFeeSettlement is the billing invariant: a request served by the
+// customer's own key settles at the platform fee, not at the notional managed
+// price, and both figures are recorded so the customer can reconcile their own
+// upstream bill.
+func TestByokFeeSettlement(t *testing.T) {
+	truncateByok(t)
+	original := common.CryptoSecret
+	common.CryptoSecret = "byok-test-master-secret"
+	t.Cleanup(func() { common.CryptoSecret = original })
+	originalFee := operation_setting.ByokFeePercent
+	operation_setting.ByokFeePercent = 5
+	t.Cleanup(func() { operation_setting.ByokFeePercent = originalFee })
+
+	const (
+		userID      = 6101
+		tokenID     = 7101
+		channelID   = 940
+		startQuota  = 1_000_000
+		notional    = 500_000 // ModelPrice $1 × QuotaPerUnit × group ratio 1
+		expectedFee = 25_000  // 5% of the notional cost
+	)
+	seedUser(t, userID, startQuota)
+	seedToken(t, tokenID, userID, "byok-settle-token", startQuota)
+	require.NoError(t, model.UpdateUserByokFeeOverride(int64(userID), operation_setting.ByokFeeNoOverride))
+
+	seedByokChannel(t, channelID, constant.ChannelTypeOpenAI, "gpt-4o")
+	key := newByokKeyFixture(int64(userID), constant.ByokProviderOpenAI, "sk-byok-settlement", constant.ByokKeyStatusActive)
+	require.NoError(t, model.InsertByokKey(key))
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	common.SetContextKey(ctx, constant.ContextKeyUserId, userID)
+
+	info := &relaycommon.RelayInfo{
+		UserId:          userID,
+		TokenId:         tokenID,
+		TokenKey:        "byok-settle-token",
+		OriginModelName: "gpt-4o",
+		UsingGroup:      "default",
+		UserGroup:       "default",
+		RelayFormat:     kittype.RelayFormatOpenAI,
+		StartTime:       time.Now(),
+		ForcePreConsume: true,
+		UserSetting:     dto.UserSetting{BillingPreference: "wallet_only"},
+		PriceData: hosttypes.PriceData{
+			UsePrice:       true,
+			ModelPrice:     1.0,
+			GroupRatioInfo: hosttypes.GroupRatioInfo{GroupRatio: 1.0},
+		},
+	}
+
+	require.NotNil(t, BeginByokAttempt(ctx, info))
+	info.ChannelMeta = &relaycommon.ChannelMeta{
+		ChannelId:   constant.ByokShadowChannelId(key.ID),
+		ChannelType: constant.ChannelTypeOpenAI,
+	}
+
+	require.Nil(t, PreConsumeBilling(ctx, notional, info))
+	PostTextConsumeQuota(ctx, info, &dto.Usage{PromptTokens: 100, CompletionTokens: 40, TotalTokens: 140}, nil)
+
+	held, err := model.GetUserQuota(userID, true)
+	require.NoError(t, err)
+	assert.Equal(t, startQuota-expectedFee, held, "only the platform fee is deducted, not the notional token cost")
+
+	var log model.Log
+	require.NoError(t, model.LOG_DB.Where("user_id = ?", userID).Take(&log).Error)
+	assert.Equal(t, expectedFee, log.Quota)
+	assert.Contains(t, log.Content, "BYOK")
+
+	var other map[string]any
+	require.NoError(t, common.UnmarshalJsonStr(log.Other, &other))
+	assert.Equal(t, true, other["byok"])
+	assert.Equal(t, "openai", other["byok_provider"])
+	assert.Equal(t, float64(notional), other["byok_notional_quota"])
+	assert.Equal(t, float64(expectedFee), other["byok_fee_quota"])
+	assert.Equal(t, strconv.FormatInt(key.ID, 10), other["byok_key_id"], "a snowflake key id must survive the JSON boundary exactly")
+
+	var usage model.ByokUsage
+	require.NoError(t, model.DB.Where("byok_key_id = ?", key.ID).Take(&usage).Error)
+	assert.True(t, usage.Success)
+	assert.Equal(t, int64(notional), usage.NotionalCost)
+	assert.Equal(t, int64(expectedFee), usage.PlatformFee)
+	assert.Equal(t, 100, usage.PromptTokens)
+	assert.Equal(t, 40, usage.CompletionTokens)
+	assert.Equal(t, "gpt-4o", usage.ModelName)
+
+	reloaded, err := model.GetByokKeyByIdAndUser(key.ID, int64(userID))
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), reloaded.UsageCount)
+	require.NotNil(t, reloaded.LastUsedAt, "a served request advances the key rotation")
+
+	var managed model.Channel
+	require.NoError(t, model.DB.Where("id = ?", channelID).Take(&managed).Error)
+	assert.Zero(t, managed.UsedQuota, "a BYOK request attributes no spend to a managed channel")
+}
+
+// TestByokFailureHandling covers the failover side of the contract: an
+// authoritative credential rejection disables the key, an upstream incident does
+// not, every attempt is recorded, and the plaintext credential never reaches a
+// persisted error.
+func TestByokFailureHandling(t *testing.T) {
+	truncateByok(t)
+	original := common.CryptoSecret
+	common.CryptoSecret = "byok-test-master-secret"
+	t.Cleanup(func() { common.CryptoSecret = original })
+
+	const (
+		userID = int64(6201)
+		secret = "sk-byok-failure-secret"
+	)
+	seedByokChannel(t, 950, constant.ChannelTypeOpenAI, "gpt-4o")
+	key := newByokKeyFixture(userID, constant.ByokProviderOpenAI, secret, constant.ByokKeyStatusActive)
+	require.NoError(t, model.InsertByokKey(key))
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	route := &ByokRoute{
+		KeyId:      key.ID,
+		UserId:     userID,
+		Provider:   constant.ByokProviderOpenAI,
+		ModelName:  "gpt-4o",
+		FeePercent: 5,
+		StartedAt:  time.Now(),
+		Channel:    buildByokShadowChannel(key, secret, "default", "gpt-4o"),
+		secret:     secret,
+	}
+	common.SetContextKey(ctx, constant.ContextKeyByokRoute, route)
+
+	// A 5xx or a timeout says nothing about the credential.
+	route.RecordFailure(ctx, kittype.NewOpenAIError(errors.New("upstream unavailable"), kittype.ErrorCodeBadResponseStatusCode, http.StatusBadGateway))
+	afterOutage, err := model.GetByokKeyByIdAndUser(key.ID, userID)
+	require.NoError(t, err)
+	assert.Equal(t, constant.ByokKeyStatusActive, afterOutage.Status, "an upstream incident must not disable a working customer key")
+
+	// The vendor's own 401 is authoritative.
+	rejected := kittype.NewOpenAIError(fmt.Errorf("incorrect API key provided: %s", secret), kittype.ErrorCodeBadResponseStatusCode, http.StatusUnauthorized)
+	route.RecordFailure(ctx, rejected)
+	afterRejection, err := model.GetByokKeyByIdAndUser(key.ID, userID)
+	require.NoError(t, err)
+	assert.Equal(t, constant.ByokKeyStatusInvalid, afterRejection.Status)
+	assert.NotEmpty(t, afterRejection.LastError)
+	assert.NotContains(t, afterRejection.LastError, secret, "the credential must never be persisted")
+	assert.NotContains(t, rejected.Error(), secret, "the credential must never reach the client")
+
+	var failures []model.ByokUsage
+	require.NoError(t, model.DB.Where("byok_key_id = ? AND success = ?", key.ID, false).Find(&failures).Error)
+	assert.Len(t, failures, 2, "every BYOK attempt is recorded, successful or not")
+	for _, failure := range failures {
+		assert.Zero(t, failure.PlatformFee, "a failed attempt charges nothing")
+		assert.Zero(t, failure.NotionalCost)
+	}
+	assert.Zero(t, afterRejection.UsageCount, "a failed attempt does not advance the rotation")
+
+	assert.True(t, FinishByokAttempt(ctx, rejected))
+	assert.Nil(t, CurrentByokRoute(ctx))
+	assert.Empty(t, route.Channel.Key, "finishing the attempt releases the plaintext credential")
+	assert.False(t, FinishByokAttempt(ctx, nil), "a managed-channel attempt reports no BYOK route")
+}
+
+// ---------------------------------------------------------------------------
 // BYOK fixtures
 // ---------------------------------------------------------------------------
 
 // truncateByok clears only the tables these tests own, so it can run alongside
-// the shared truncate helper without disturbing other suites.
+// the shared truncate helper without disturbing other suites. The user, token,
+// and log rows are included because the relay-integration cases below settle
+// real requests: users.aff_code carries a unique index, so a leftover row from
+// an earlier case would fail the next seed rather than test anything.
 func truncateByok(t *testing.T) {
 	t.Helper()
-	for _, table := range []string{"byok_keys", "byok_usage", "abilities", "channels"} {
+	byokTables := []string{"byok_keys", "byok_usage", "abilities", "channels", "users", "tokens", "logs"}
+	for _, table := range byokTables {
 		require.NoError(t, model.DB.Exec("DELETE FROM "+table).Error)
 	}
 	t.Cleanup(func() {
-		for _, table := range []string{"byok_keys", "byok_usage", "abilities", "channels"} {
+		for _, table := range byokTables {
 			model.DB.Exec("DELETE FROM " + table)
 		}
 	})

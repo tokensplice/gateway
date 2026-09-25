@@ -34,19 +34,19 @@ var byokRotationCursor atomic.Uint64
 // The returned key still holds its ciphertext. Decrypt with (*ByokKey).Secret
 // only at the point where the upstream request is built, and never log it.
 //
-// rc.4 INTEGRATION POINT (routing enhancement). This function is deliberately
-// not called from the relay loop yet. Wiring it up means:
-//   - controller/relay.go getChannel(): consult FindMatchingByokKey(info.UserId,
-//     info.OriginModelName) before service.CacheGetRandomSatisfiedChannel, and
-//     build a synthetic channel (base URL + decrypted key) when it returns a
-//     key, so the existing adaptors, retries, and stream handling are reused
-//     unchanged.
-//   - On settlement, charge CalculateByokFee(notionalCost, feePercent) instead
-//     of the full price, then persist a model.ByokUsage row and call
-//     model.TouchByokKeyUsage. Keeping the touch at settlement rather than
-//     here means a routed-but-failed request does not advance the rotation.
-//   - On an upstream 401/403 from a BYOK channel, mark the key invalid through
-//     model.UpdateByokKeyStatus and fall through to a managed channel, so one
+// The relay calls this through BeginByokAttempt (see byok_relay.go), which
+// turns a match into an ephemeral shadow channel injected ahead of managed
+// channel selection in controller/relay.go getChannel. That wiring is what
+// makes the three rules below observable:
+//   - the shadow channel reuses the existing adaptors, retries, and stream
+//     handling unchanged, because it is an ordinary *model.Channel of the
+//     vendor's own type;
+//   - settlement charges CalculateByokFee(notionalCost, feePercent) instead of
+//     the full price, then persists a model.ByokUsage row and calls
+//     model.TouchByokKeyUsage — the touch happens at settlement rather than
+//     here, so a routed-but-failed request does not advance the rotation;
+//   - an upstream 401/403 from a shadow channel marks the key invalid through
+//     model.UpdateByokKeyStatus and falls through to a managed channel, so one
 //     revoked customer key cannot take down the route.
 func FindMatchingByokKey(userId int64, modelName string) (*model.ByokKey, error) {
 	if userId <= 0 {

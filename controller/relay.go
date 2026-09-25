@@ -155,6 +155,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
 
+	// Safety net for the paths that abandon an attempt before it reaches the
+	// upstream (billing reservation, request body): a resolved BYOK route must
+	// not leave the decrypted customer credential referenced by the request.
+	defer service.FinishByokAttempt(c, nil)
+
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		relayInfo.StreamStatus = nil
 		relayInfo.PerformanceBusinessRejection = false
@@ -196,6 +201,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 
 		if newAPIError == nil {
+			service.FinishByokAttempt(c, nil)
 			service.MarkRequestPolicySuccess(c, relayInfo.StreamStatus)
 			relayInfo.LastError = nil
 			return
@@ -205,8 +211,25 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		relayInfo.LastError = newAPIError
 
 		decision := service.DecideRelayRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry())
+		byokAttempted := service.FinishByokAttempt(c, newAPIError)
+		if byokAttempted && !relayInfo.HasSendResponse() {
+			// The customer's own key could not serve this request; a managed
+			// channel still can, and the customer must never see the BYOK
+			// failure. Handing the retry index back means the BYOK attempt
+			// consumes none of the managed budget and leaves managed selection
+			// on its own priority bands, so preferring BYOK costs nothing. A
+			// response that already started streaming cannot be retried.
+			decision = service.PolicyDecision{Action: "retry", Reason: "byok_fallback", Source: "routing"}
+			retryParam.SetRetry(retryParam.GetRetry() - 1)
+		}
 		service.RecordPolicyFailure(c, channel.Id, newAPIError, decision)
-		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError, relayInfo)
+		usingKey := common.GetContextKeyString(c, constant.ContextKeyChannelKey)
+		if constant.IsByokShadowChannelId(channel.Id) {
+			// The channel-health path has no business holding a customer
+			// credential, and a shadow channel is never auto-disabled anyway.
+			usingKey = ""
+		}
+		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, usingKey, channel.GetAutoBan()), newAPIError, relayInfo)
 
 		if decision.Action != "retry" {
 			break
@@ -260,6 +283,12 @@ var upgrader = websocket.Upgrader{
 }
 
 func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service.RetryParam) (*model.Channel, *types.NewAPIError) {
+	// A customer's own upstream key gets the first attempt at their request.
+	// BeginByokAttempt also clears the previous attempt's route, so the managed
+	// fallback below can never settle at the BYOK platform fee.
+	if channel, ok := selectByokShadowChannel(c, info); ok {
+		return channel, nil
+	}
 	if info.ChannelMeta == nil {
 		autoBan := c.GetBool("auto_ban")
 		autoBanInt := 1
@@ -291,6 +320,34 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 		return nil, newAPIError
 	}
 	return channel, nil
+}
+
+// selectByokShadowChannel hands the attempt to an ephemeral channel built from
+// the customer's own provider key, or reports false so the caller selects a
+// managed channel exactly as it did before BYOK existed.
+//
+// The shadow channel reuses middleware.SetupContextForSelectedChannel, so the
+// adaptor choice, request conversion, streaming, and error mapping are the
+// ordinary ones for that vendor's channel type. Nothing about it is persisted:
+// it carries a negative id and AutoBan 0, which keeps a customer's rejected
+// credential from ever touching a platform channel's status or accounting.
+func selectByokShadowChannel(c *gin.Context, info *relaycommon.RelayInfo) (*model.Channel, bool) {
+	route := service.BeginByokAttempt(c, info)
+	if route == nil {
+		return nil, false
+	}
+	channel := route.Channel
+	service.RequestPolicy(c).BeginAttempt(channel, info.UsingGroup)
+	if apiErr := middleware.SetupContextForSelectedChannel(c, channel, info.OriginModelName); apiErr != nil {
+		logger.LogWarn(c, "byok: shadow channel setup failed, using managed channels: %s", apiErr.Error())
+		service.ClearByokRoute(c)
+		return nil, false
+	}
+	// The platform fee is a percentage of what this request would have cost, so
+	// price it against the group it would otherwise have been served from.
+	info.PriceData.GroupRatioInfo = helper.HandleGroupRatio(c, info)
+	logger.LogDebug(c, "byok: routing user %d model %s through their own %s key", info.UserId, info.OriginModelName, route.Provider)
+	return channel, true
 }
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) {

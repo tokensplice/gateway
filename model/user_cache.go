@@ -11,19 +11,25 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const userCacheSchemaVersion = 2
+const userCacheSchemaVersion = 3
 
 type UserBase struct {
-	Id          int    `json:"id"`
-	Group       string `json:"group"`
-	Email       string `json:"email"`
-	Quota       int    `json:"quota"`
-	Status      int    `json:"status"`
-	Role        int    `json:"role"`
-	Username    string `json:"username"`
-	Setting     string `json:"setting"`
-	AuthVersion int64  `json:"-"`
-	CacheSchema int    `json:"-"`
+	Id       int    `json:"id"`
+	Group    string `json:"group"`
+	Email    string `json:"email"`
+	Quota    int    `json:"quota"`
+	Status   int    `json:"status"`
+	Role     int    `json:"role"`
+	Username string `json:"username"`
+	Setting  string `json:"setting"`
+	// ByokFeeOverride is the admin-set BYOK platform fee percentage for this
+	// user, or operation_setting.ByokFeeNoOverride when they inherit the global
+	// option. It is cached because BYOK settlement resolves it on the relay hot
+	// path; a missing hash field decodes as 0, so the schema version above must
+	// be bumped whenever this field is added or its meaning changes.
+	ByokFeeOverride float64 `json:"byok_fee_override"`
+	AuthVersion     int64   `json:"-"`
+	CacheSchema     int     `json:"-"`
 }
 
 func (user *UserBase) WriteContext(c *gin.Context) {

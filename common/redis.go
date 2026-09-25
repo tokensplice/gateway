@@ -218,6 +218,18 @@ func RedisHGetObj(key string, obj any) error {
 					return fmt.Errorf("failed to parse bool field %s: %w", fieldName, err)
 				}
 				fieldValue.SetBool(boolValue)
+			case reflect.Float32, reflect.Float64:
+				// An empty hash value is the "nil pointer" marker written by
+				// RedisHSetObj; leave the field at its zero value instead of
+				// failing the whole read.
+				if value == "" {
+					continue
+				}
+				floatValue, err := strconv.ParseFloat(value, fieldValue.Type().Bits())
+				if err != nil {
+					return fmt.Errorf("failed to parse float field %s: %w", fieldName, err)
+				}
+				fieldValue.SetFloat(floatValue)
 			case reflect.Struct:
 				// Special handling for gorm.DeletedAt
 				if fieldValue.Type().String() == "gorm.DeletedAt" {

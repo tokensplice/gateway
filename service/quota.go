@@ -346,21 +346,45 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		logContent = fmt.Sprintf("模型价格 %.2f，分组倍率 %.2f", modelPrice, groupRatio)
 	}
 
+	// A BYOK-served request charges the platform fee rather than the notional
+	// token cost; see the identical branch in PostTextConsumeQuota. An audio
+	// settlement can be reached from the OpenAI chat path, so the fee has to be
+	// applied here too or the customer would be billed the full price on their
+	// own key.
+	byokRoute := CurrentByokRoute(ctx)
+	notionalQuota := int64(quota)
+	chargedQuota := quota
+	if byokRoute != nil {
+		fee, feeClamp := CalculateByokFeeChecked(notionalQuota, byokRoute.FeePercent)
+		noteQuotaClamp(relayInfo, feeClamp)
+		chargedQuota = int(fee)
+		logContent += fmt.Sprintf("，BYOK 自有密钥（%s），名义消费 %s，平台服务费 %s（%.2f%%）",
+			byokRoute.Provider, logger.LogQuota(int(notionalQuota)), logger.LogQuota(chargedQuota), byokRoute.FeePercent)
+	}
+
 	// record all the consume log even if quota is 0
 	if totalTokens == 0 && !fixedPriceBilling {
 		// in this case, must be some error happened
 		// we cannot just return, because we may have to return the pre-consumed quota
-		quota = 0
+		notionalQuota = 0
+		chargedQuota = 0
 		logContent += "（可能是上游超时）"
 		logger.LogError(ctx, fmt.Sprintf("total tokens is 0, cannot consume quota, userId %d, channelId %d, "+
 			"tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, billingModelName, relayInfo.FinalPreConsumedQuota))
 	} else {
-		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, quota)
-		model.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
+		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, chargedQuota)
+		if byokRoute == nil {
+			// A BYOK shadow channel is not a persisted channel; there is no
+			// platform spend to attribute to it.
+			model.UpdateChannelUsedQuota(relayInfo.ChannelId, chargedQuota)
+		}
 	}
 
-	if err := SettleBilling(ctx, relayInfo, quota); err != nil {
+	if err := SettleBilling(ctx, relayInfo, chargedQuota); err != nil {
 		logger.LogError(ctx, "error settling billing: "+err.Error())
+	}
+	if byokRoute != nil {
+		byokRoute.RecordSuccess(ctx, usage.PromptTokens, usage.CompletionTokens, notionalQuota, int64(chargedQuota))
 	}
 
 	logModel := billingModelName
@@ -372,6 +396,7 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 	if tieredResult != nil {
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)
 	}
+	byokRoute.AppendByokLogInfo(other, notionalQuota, int64(chargedQuota))
 	attachQuotaSaturation(ctx, relayInfo, other)
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
@@ -379,7 +404,7 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		CompletionTokens: usage.CompletionTokens,
 		ModelName:        logModel,
 		TokenName:        tokenName,
-		Quota:            quota,
+		Quota:            chargedQuota,
 		Content:          logContent,
 		TokenId:          relayInfo.TokenId,
 		UseTimeSeconds:   int(useTimeSeconds),

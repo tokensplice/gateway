@@ -8,11 +8,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- BYOK relay integration: a request whose model matches a customer's own provider key is routed through that key and charged only the platform fee (a percentage of the notional managed-channel price), with seamless failover to managed channels when the key fails
+- BYOK usage recording: every attempt, successful or not, writes a `byok_usage` row and an upstream 401/403 marks the key invalid
 - Brand configuration via environment variables (`SYSTEM_NAME`, `LOGO_URL`, `FOOTER`, `TOP_UP_LINK`)
 - Project documentation: CONTRIBUTING.md, SECURITY.md, .env.example
 - GitHub Actions CI workflow for lint, test, and build verification
 
 ### Changed
+- `byok_fee_override` is now part of the cached user record, so resolving the BYOK platform fee costs no extra database read on the relay path
 - Updated `--help` output to reflect TokenSplice Gateway identity
 - README.md rewritten for TokenSplice project
 

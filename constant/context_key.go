@@ -44,6 +44,16 @@ const (
 	ContextKeyAutoGroupIndex      ContextKey = "auto_group_index"
 	ContextKeyAutoGroupRetryIndex ContextKey = "auto_group_retry_index"
 
+	// ContextKeyByokRoute holds the *service.ByokRoute of the current attempt
+	// when a request is being served through a customer's own upstream key, and
+	// is cleared on every attempt so a BYOK failure that falls through to a
+	// managed channel never settles at the platform fee.
+	ContextKeyByokRoute ContextKey = "byok_route"
+	// ContextKeyByokAttempted marks that BYOK routing was already evaluated for
+	// this request. A request makes at most one BYOK attempt, which is what
+	// keeps the managed-channel fallback from re-entering the BYOK path.
+	ContextKeyByokAttempted ContextKey = "byok_attempted"
+
 	/* user related keys */
 	ContextKeyUserId      ContextKey = "id"
 	ContextKeyUserSetting ContextKey = "user_setting"

@@ -226,9 +226,28 @@ func GetActiveByokKeysByUserProvider(userId int64, provider string) ([]*ByokKey,
 	return keys, err
 }
 
-// TouchByokKeyUsage marks a key as used. It is called from the settlement path
-// wired up in rc.4, not from key selection, so a routed-but-failed request
-// does not advance the rotation.
+// HasActiveByokKey is the cheap relay-path gate in front of BYOK routing.
+// Provider detection and key selection cost several queries, so the relay asks
+// this first and skips BYOK entirely for the overwhelming majority of users,
+// who hold no key at all. It reads one indexed row and stops.
+func HasActiveByokKey(userId int64) (bool, error) {
+	if userId <= 0 {
+		return false, nil
+	}
+	var ids []int64
+	err := DB.Model(&ByokKey{}).
+		Where("user_id = ? AND status = ?", userId, constant.ByokKeyStatusActive).
+		Limit(1).
+		Pluck("id", &ids).Error
+	if err != nil {
+		return false, err
+	}
+	return len(ids) > 0, nil
+}
+
+// TouchByokKeyUsage marks a key as used. It is called from BYOK settlement
+// (service.ByokRoute.RecordSuccess), not from key selection, so a routed but
+// failed request does not advance the rotation.
 func TouchByokKeyUsage(id int64, usedAt time.Time) error {
 	return DB.Model(&ByokKey{}).
 		Where("id = ?", id).

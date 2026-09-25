@@ -34,6 +34,18 @@ func SetApiRouter(router *gin.Engine) {
 		//apiRouter.GET("/midjourney", controller.GetMidjourney)
 		apiRouter.GET("/home_page_content", controller.GetHomePageContent)
 		apiRouter.GET("/pricing", middleware.HeaderNavModuleAuth("pricing"), controller.GetPricing)
+		currencyRoute := apiRouter.Group("/currency")
+		{
+			currencyRoute.GET("/supported", controller.GetSupportedCurrencies)
+			currencyRateRoute := currencyRoute.Group("/rates")
+			currencyRateRoute.Use(middleware.AdminAuth())
+			{
+				currencyRateRoute.GET("", controller.GetCurrencyRates)
+				currencyRateRoute.POST("", controller.UpsertCurrencyRate)
+				currencyRateRoute.POST("/refresh", controller.RefreshCurrencyRatesNow)
+				currencyRateRoute.DELETE("/:id", controller.DeleteCurrencyRate)
+			}
+		}
 		perfMetricsRoute := apiRouter.Group("/perf-metrics")
 		perfMetricsRoute.Use(middleware.HeaderNavModulePublicOrUserAuth("pricing"))
 		{
@@ -95,7 +107,7 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.DELETE("/sessions/:sid", middleware.DisableCache(), controller.DeleteLoginSession)
 				selfRoute.POST("/sessions/revoke-others", middleware.DisableCache(), controller.RevokeOtherLoginSessions)
 				selfRoute.GET("/self/groups", controller.GetUserGroups)
-				selfRoute.GET("/self", controller.GetSelf)
+				selfRoute.GET("/self", middleware.CurrencyQuotaHeaders(), controller.GetSelf)
 				selfRoute.GET("/models", controller.GetUserModels)
 				selfRoute.PUT("/self", middleware.CriticalRateLimit(), middleware.DisableCache(), controller.UpdateSelf)
 				selfRoute.DELETE("/self", middleware.DisableCache(), controller.DeleteSelf)

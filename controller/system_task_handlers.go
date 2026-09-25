@@ -22,6 +22,30 @@ func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(modelUpdateHandler{})
 	service.RegisterSystemTaskHandler(midjourneyPollHandler{})
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
+	service.RegisterSystemTaskHandler(currencyRateRefreshHandler{})
+}
+
+// currencyRateRefreshHandler runs the periodic display exchange rate refresh.
+// Enablement and cadence come from CURRENCY_AUTO_UPDATE and
+// CURRENCY_UPDATE_INTERVAL_HOURS; the run updates every non-manual USD pair
+// from the public rate API.
+type currencyRateRefreshHandler struct{}
+
+func (currencyRateRefreshHandler) Type() string { return model.SystemTaskTypeCurrencyRateRefresh }
+
+func (currencyRateRefreshHandler) Enabled() bool { return service.CurrencyAutoUpdateEnabled() }
+
+func (currencyRateRefreshHandler) Interval() time.Duration { return service.CurrencyUpdateInterval() }
+
+func (currencyRateRefreshHandler) NewPayload() any { return nil }
+
+func (currencyRateRefreshHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	updated, err := service.RefreshCurrencyRates(ctx)
+	if err != nil {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, map[string]int{"updated": updated}, err)
+		return
+	}
+	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, map[string]int{"updated": updated}, nil)
 }
 
 // channelTestHandler runs the scheduled "test all channels" job. Enablement and

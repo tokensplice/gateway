@@ -14,6 +14,7 @@ func SetDashboardRouter(router *gin.Engine) {
 	apiRouter.Use(middleware.GlobalAPIRateLimit())
 	apiRouter.Use(middleware.CORS())
 	apiRouter.Use(middleware.TokenAuth())
+	apiRouter.Use(middleware.CurrencyQuotaHeaders())
 	{
 		apiRouter.GET("/dashboard/billing/subscription", controller.GetSubscription)
 		apiRouter.GET("/v1/dashboard/billing/subscription", controller.GetSubscription)

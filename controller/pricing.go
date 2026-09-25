@@ -42,10 +42,14 @@ func GetPricing(c *gin.Context) {
 	groupRatio := map[string]float64{}
 	maps.Copy(groupRatio, ratio_setting.GetGroupRatioCopy())
 	var group string
+	displayCurrency := common.DefaultDisplayCurrency
 	if exists {
 		user, err := model.GetUserCache(userId.(int))
 		if err == nil {
 			group = user.Group
+			if preferred := user.GetSetting().PreferredCurrency; preferred != "" {
+				displayCurrency = preferred
+			}
 			for g := range groupRatio {
 				ratio, ok := ratio_setting.GetGroupGroupRatio(group, g)
 				if ok {
@@ -64,15 +68,37 @@ func GetPricing(c *gin.Context) {
 		}
 	}
 
+	// Multi-currency display (rc.3): prices above stay quota/USD based; the
+	// USD->X rate table lets clients render every price in any supported
+	// currency. rate_ok=false marks a stale fallback rate.
+	currencyRates := map[string]gin.H{
+		"USD": {"symbol": common.CurrencySymbol("USD"), "rate": 1.0, "rate_ok": true},
+	}
+	if rates, err := model.GetAllCurrencyRates(); err == nil {
+		for _, rate := range rates {
+			if rate.BaseCurrency != "USD" {
+				continue
+			}
+			currencyRates[rate.TargetCurrency] = gin.H{
+				"symbol":  common.CurrencySymbol(rate.TargetCurrency),
+				"rate":    rate.Rate,
+				"rate_ok": rate.RateOK,
+			}
+		}
+	}
+
 	c.JSON(200, gin.H{
-		"success":            true,
-		"data":               pricing,
-		"vendors":            model.GetVendors(),
-		"group_ratio":        groupRatio,
-		"usable_group":       usableGroup,
-		"supported_endpoint": model.GetSupportedEndpointMap(),
-		"auto_groups":        service.GetUserAutoGroup(group),
-		"pricing_version":    "a42d372ccf0b5dd13ecf71203521f9d2",
+		"success":                  true,
+		"data":                     pricing,
+		"vendors":                  model.GetVendors(),
+		"group_ratio":              groupRatio,
+		"usable_group":             usableGroup,
+		"supported_endpoint":       model.GetSupportedEndpointMap(),
+		"auto_groups":              service.GetUserAutoGroup(group),
+		"pricing_version":          "a42d372ccf0b5dd13ecf71203521f9d2",
+		"display_currency":         displayCurrency,
+		"default_display_currency": common.DefaultDisplayCurrency,
+		"currency_rates":           currencyRates,
 	})
 }
 

@@ -62,6 +62,15 @@ func InitEnv() {
 		TopUpLink = v
 	}
 
+	// Multi-currency display: fallback currency for users without a preference.
+	if v := os.Getenv("DEFAULT_DISPLAY_CURRENCY"); v != "" {
+		if normalized := NormalizeCurrencyCode(v); IsSupportedCurrency(normalized) {
+			DefaultDisplayCurrency = normalized
+		} else {
+			SysError("invalid DEFAULT_DISPLAY_CURRENCY: " + v + ", using default value: " + DefaultDisplayCurrency)
+		}
+	}
+
 	if os.Getenv("SESSION_SECRET") != "" {
 		ss := os.Getenv("SESSION_SECRET")
 		if ss == "random_string" {

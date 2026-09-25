@@ -21,6 +21,10 @@ const (
 	SystemTaskTypeModelUpdate    = "model_update"
 	SystemTaskTypeMidjourneyPoll = "midjourney_poll"
 	SystemTaskTypeAsyncTaskPoll  = "async_task_poll"
+
+	// SystemTaskTypeCurrencyRateRefresh periodically re-fetches display
+	// exchange rates from the configured public rate API.
+	SystemTaskTypeCurrencyRateRefresh = "currency_rate_refresh"
 )
 
 var ErrSystemTaskLockLost = errors.New("system task lock lost")

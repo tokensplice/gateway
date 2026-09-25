@@ -498,33 +498,48 @@ func buildSelfUserData(user *model.User) map[string]any {
 	userSetting := user.GetSetting()
 	permissions := calculateUserPermissions(user.Role)
 	permissions["admin_permissions"] = authz.Capabilities(user.Id, user.Role)
+
+	// Display-currency conversion (rc.3): billing stays in quota; these fields
+	// only give the frontend the balance in the user's preferred currency.
+	preferredCurrency := userSetting.PreferredCurrency
+	if preferredCurrency == "" {
+		preferredCurrency = common.DefaultDisplayCurrency
+	}
+	quotaDisplay, displayCurrency, rateOK := common.ConvertQuotaToCurrency(int64(user.Quota), preferredCurrency)
+	usedQuotaDisplay, _, _ := common.ConvertQuotaToCurrency(int64(user.UsedQuota), preferredCurrency)
+
 	return map[string]any{
-		"id":                user.Id,
-		"username":          user.Username,
-		"display_name":      user.DisplayName,
-		"has_password":      user.HasPassword,
-		"role":              user.Role,
-		"status":            user.Status,
-		"email":             user.Email,
-		"github_id":         user.GitHubId,
-		"discord_id":        user.DiscordId,
-		"oidc_id":           user.OidcId,
-		"wechat_id":         user.WeChatId,
-		"telegram_id":       user.TelegramId,
-		"group":             user.Group,
-		"quota":             user.Quota,
-		"used_quota":        user.UsedQuota,
-		"request_count":     user.RequestCount,
-		"aff_code":          user.AffCode,
-		"aff_count":         user.AffCount,
-		"aff_quota":         user.AffQuota,
-		"aff_history_quota": user.AffHistoryQuota,
-		"inviter_id":        user.InviterId,
-		"linux_do_id":       user.LinuxDOId,
-		"setting":           user.Setting,
-		"stripe_customer":   user.StripeCustomer,
-		"sidebar_modules":   userSetting.SidebarModules, // 正确提取sidebar_modules字段
-		"permissions":       permissions,
+		"id":                 user.Id,
+		"username":           user.Username,
+		"display_name":       user.DisplayName,
+		"has_password":       user.HasPassword,
+		"role":               user.Role,
+		"status":             user.Status,
+		"email":              user.Email,
+		"github_id":          user.GitHubId,
+		"discord_id":         user.DiscordId,
+		"oidc_id":            user.OidcId,
+		"wechat_id":          user.WeChatId,
+		"telegram_id":        user.TelegramId,
+		"group":              user.Group,
+		"quota":              user.Quota,
+		"used_quota":         user.UsedQuota,
+		"request_count":      user.RequestCount,
+		"aff_code":           user.AffCode,
+		"aff_count":          user.AffCount,
+		"aff_quota":          user.AffQuota,
+		"aff_history_quota":  user.AffHistoryQuota,
+		"inviter_id":         user.InviterId,
+		"linux_do_id":        user.LinuxDOId,
+		"setting":            user.Setting,
+		"stripe_customer":    user.StripeCustomer,
+		"sidebar_modules":    userSetting.SidebarModules, // 正确提取sidebar_modules字段
+		"preferred_currency": preferredCurrency,
+		"display_currency":   displayCurrency,
+		"quota_display":      quotaDisplay,
+		"used_quota_display": usedQuotaDisplay,
+		"display_rate_ok":    rateOK,
+		"permissions":        permissions,
 	}
 }
 
@@ -824,6 +839,38 @@ func UpdateSelf(c *gin.Context) {
 		if langStr, ok := language.(string); ok {
 			currentSetting.Language = langStr
 		}
+
+		if err := model.UpdateUserSetting(user.Id, currentSetting); err != nil {
+			common.ApiErrorI18n(c, i18n.MsgUpdateFailed)
+			return
+		}
+
+		common.ApiSuccessI18n(c, i18n.MsgUpdateSuccess, nil)
+		return
+	}
+
+	// 检查是否是展示货币偏好更新请求 (display only, billing stays in quota)
+	if preferredCurrency, currencyExists := requestData["preferred_currency"]; currencyExists && !passwordRequested {
+		currencyStr, ok := preferredCurrency.(string)
+		if !ok {
+			common.ApiErrorMsg(c, "preferred_currency must be a string")
+			return
+		}
+		currency := common.NormalizeCurrencyCode(currencyStr)
+		if !common.IsSupportedCurrency(currency) {
+			common.ApiErrorMsg(c, "preferred_currency must be one of: "+strings.Join(common.SupportedCurrencies(), ", "))
+			return
+		}
+
+		userId := c.GetInt("id")
+		user, err := model.GetUserById(userId, false)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+
+		currentSetting := user.GetSetting()
+		currentSetting.PreferredCurrency = currency
 
 		if err := model.UpdateUserSetting(user.Id, currentSetting); err != nil {
 			common.ApiErrorI18n(c, i18n.MsgUpdateFailed)
@@ -1388,6 +1435,8 @@ func UpdateUserSetting(c *gin.Context) {
 		UpstreamModelUpdateNotifyEnabled: upstreamModelUpdateNotifyEnabled,
 		AcceptUnsetRatioModel:            req.AcceptUnsetModelRatioModel,
 		RecordIpLog:                      req.RecordIpLog,
+		// 通知设置重建时保留展示货币偏好（由 PUT /api/user/self 更新）
+		PreferredCurrency: existingSettings.PreferredCurrency,
 	}
 
 	// 如果是webhook类型,添加webhook相关设置

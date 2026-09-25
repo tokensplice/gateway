@@ -372,9 +372,13 @@ func migrateDB() error {
 		&AuthzRole{},
 		&ByokKey{},
 		&ByokUsage{},
+		&CurrencyRate{},
 	)
 	if err != nil {
 		return err
+	}
+	if err := SeedDefaultCurrencyRates(); err != nil {
+		common.SysError("failed to seed default currency rates: " + err.Error())
 	}
 	if err := InitializeUserAuthVersions(); err != nil {
 		return err

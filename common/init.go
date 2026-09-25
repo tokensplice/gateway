@@ -23,10 +23,10 @@ var (
 )
 
 func printHelp() {
-	fmt.Println("NewAPI(Based OneAPI) " + Version + " - The next-generation LLM gateway and AI asset management system supports multiple languages.")
-	fmt.Println("Original Project: OneAPI by JustSong - https://github.com/songquanpeng/one-api")
-	fmt.Println("Maintainer: QuantumNous - https://github.com/QuantumNous/new-api")
-	fmt.Println("Usage: newapi [--port <port>] [--log-dir <log directory>] [--version] [--help]")
+	fmt.Println(GetEnvOrDefaultString("SYSTEM_NAME", "TokenSplice Gateway") + " " + Version + " — Unified AI inference gateway (AGPLv3).")
+	fmt.Println("Based on new-api by QuantumNous - https://github.com/QuantumNous/new-api")
+	fmt.Println("Source code: https://github.com/tokensplice/gateway")
+	fmt.Println("Usage: gateway [--port <port>] [--log-dir <log directory>] [--version] [--help]")
 }
 
 func InitEnv() {
@@ -45,6 +45,21 @@ func InitEnv() {
 	if *PrintHelp {
 		printHelp()
 		os.Exit(0)
+	}
+
+	// Brand configuration — allows white-labeling without code changes.
+	// These set the *initial* values; admins can still override via the web console (OptionMap).
+	if v := os.Getenv("SYSTEM_NAME"); v != "" {
+		SystemName = v
+	}
+	if v := os.Getenv("LOGO_URL"); v != "" {
+		Logo = v
+	}
+	if v := os.Getenv("FOOTER"); v != "" {
+		Footer = v
+	}
+	if v := os.Getenv("TOP_UP_LINK"); v != "" {
+		TopUpLink = v
 	}
 
 	if os.Getenv("SESSION_SECRET") != "" {
